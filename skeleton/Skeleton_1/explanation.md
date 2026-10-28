@@ -1,5 +1,7 @@
 # Skeleton 1: complete hybrid encryption workflow
 
+For algorithm changes, read [the detailed replacement guide](replacement_guide.md), with exact function edits and links to the common recipes.
+
 ## Run it
 
 From the project root:

@@ -1,5 +1,7 @@
 # Skeleton 4: local encrypted records, Paillier totals and keyword search
 
+For algorithm changes, read [the detailed replacement guide](replacement_guide.md), with exact function edits and links to the common recipes.
+
 ## Start here
 
 This extends Skeleton 3 with encrypted numeric amounts, HMAC keyword lookup and a finance role. It is one self-contained function-based Python program. There are no sockets, user-defined classes, hidden password prompts or command-line options. All runtime storage is separate .txt files. Existing Skeleton 1–3 files and data are unchanged; Skeleton 4 initializes its own practice_data.

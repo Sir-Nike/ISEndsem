@@ -1,5 +1,7 @@
 # Skeleton 3: local role-based encrypted records
 
+For algorithm changes, read [the detailed replacement guide](replacement_guide.md), with exact function edits and links to the common recipes.
+
 ## Run this one program
 
 From the project root:

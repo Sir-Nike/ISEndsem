@@ -1,0 +1,199 @@
+RSA, ElGamal, ECC, DH and Rabin replacement guide
+
+1. Identify which RSA you are changing
+
+The receiver's RSA pair wraps/unwraps the symmetric session key. It is not the sender's ElGamal signing pair. Skeletons 2–4 also have a separate application RSA-PSS key signing account/catalog/audit storage. Replacing receiver RSA with ECC should not accidentally replace that application key.
+
+The useful interface is:
+
+python
+encrypted_key_text = Encrypt_Key(session_key_bytes, receiver_public)
+session_key_bytes = Decrypt_Key(encrypted_key_text, receiver_private)
+
+
+Keep encrypted_key_text a string. Complex wrapping output can be json.dumps(dictionary) inside encrypted_key.txt; Decrypt_Key uses json.loads. Existing read/write functions then remain usable. Save enough information to reconstruct every ephemeral point, IV/nonce, tag, salt and original byte length. The whole string is already covered by the outer signature.
+
+2. Decision table
+
+| Requested mechanism | Correct action | Receiver public/private format |
+| --- | --- | --- |
+| RSA-OAEP, different bits/hash | change RSA generation/OAEP parameters on both sides | PEM remains |
+| RSA PKCS#1 v1.5 encryption | replace wrapping API and failure handling | PEM remains |
+| Textbook RSA integer exercise | use raw modular arithmetic and input limits; usually a different workflow | integer n/e/d values |
+| Finite-field ElGamal encryption | wrap key as a bounded integer or use an explicitly defined hybrid | p,g,y and secret x |
+| ECC hybrid / ECDH | ephemeral agreement, KDF, then symmetric wrap of the existing session key | ECC PEM plus saved ephemeral public key |
+| EC-ElGamal hybrid | use lab point encapsulation and its authenticated inner envelope | P-256 ECC PEM plus C1/C2 point records |
+| Finite DH | agreement + KDF + separate key wrapping, or derive the payload key directly | group p,g, public y, private exponent |
+| Rabin | encode with redundancy, square, recover/test four roots | public n; private p,q |
+| GnuPG | external command/keyring workflow, not a Crypto.Cipher constructor | key fingerprints/armored messages |
+
+PyCryptodome's [OAEP API](https://www.pycryptodome.org/src/cipher/oaep), [ECC API](https://www.pycryptodome.org/src/public_key/ecc) and [ECC key-agreement API](https://www.pycryptodome.org/src/protocol/dh) describe the corresponding library operations. ECC is a family, not one generic Encrypt constructor. DH does not sign a message.
+
+3. RSA size or OAEP hash only
+
+For RSA-4096, change RSA.generate(2048) to RSA.generate(4096) in the RECEIVER generation function, not necessarily the unrelated application audit generator. Use a fresh identity/version; previous RSA-2048 private files are not converted by changing a default number.
+
+For OAEP/SHA-512, import SHA512 and pass hashAlgo=SHA512 in BOTH Encrypt_Key and Decrypt_Key. Update Metadata's key_wrap label. Changing Hash_Generate alone does not change OAEP.
+
+OAEP maximum input length is k - 2*hLen - 2 bytes, with k the RSA modulus size in bytes. With RSA-2048/SHA-256 it is 190 bytes; with RSA-2048/SHA-512 it is 126. Both carry ordinary 16/24/32-byte AES keys and a 64-byte SIV key. RSA-1024/SHA-256 has a 62-byte limit and cannot carry a 64-byte SIV key. Encrypt file contents with the payload cipher; RSA carries only the key.
+
+4. RSA PKCS#1 v1.5 encryption
+
+Only use this if the question names it. The signature module pkcs1_15 is not the encryption module PKCS1_v1_5.
+
+python
+from Crypto.Cipher import PKCS1_v1_5
+from Crypto.PublicKey import RSA
+from Crypto.Random import get_random_bytes
+
+def Encrypt_Key(key, public_pem):
+    return PKCS1_v1_5.new(RSA.import_key(public_pem)).encrypt(key).hex()
+
+def Decrypt_Key(text, private_pem):
+    Example assumes a 32-byte AES-256 key; change both lengths for another size.
+    sentinel = get_random_bytes(32)
+    result = PKCS1_v1_5.new(RSA.import_key(private_pem)).decrypt(
+        bytes.fromhex(text), sentinel, expected_pt_len=32
+    )
+    if result == sentinel:
+        raise ValueError("Invalid wrapped key")
+    return result
+
+
+Keep outer verification before this function, reject uniformly, and change Metadata. A returned sentinel is failure, not an AES key. [Encryption API](https://www.pycryptodome.org/src/cipher/pkcs1_v1_5).
+
+5. Finite-field ElGamal instead of RSA wrapping
+
+Use the independent receiver encryption pair, not the sender's signing pair. PyCryptodome ElGamal.generate can generate the encryption identity, but its old public encrypt/decrypt methods are not implemented: use the lab arithmetic/adapter. Do not call undocumented _encrypt/_decrypt.
+
+Copy Wrap_ElGamal/Unwrap_ElGamal from [recipes](replacement_recipes.py), plus json, secrets and their imports. Then:
+
+python
+def Encrypt_Key(key, receiver_public):
+    return Wrap_ElGamal(key, receiver_public)
+
+def Decrypt_Key(text, receiver_private):
+    return Unwrap_ElGamal(text, receiver_private)
+
+
+Generate receiver keys using ElGamal.generate, convert library p,g,y,x values to int, and return private/public dictionaries. Use a modulus comfortably larger than the integer representation of the session key. A 256-bit p cannot reliably contain an arbitrary 32-byte AES key, even though both are described as 256 bits. Use the exam-specified larger modulus; the adapter rejects values outside 1..p-1. It stores original byte length so leading zero bytes survive conversion.
+
+Both public/private receiver files now contain JSON text, not RSA PEM. Adapt generation, reading, pair checks, fingerprinting and public registration before running. The public tuple must be validated; the registered receiver format needs to accept p,g,y and reject a supplied x. Preserve separate sender ElGamal signing keys even though both algorithms share a name.
+
+[Lab finite-field ElGamal](../../Labs/Lab_03/Q03_ElGamal/solution.py) provides elgamal_encrypt(public,message) -> (c1,c2) and elgamal_decrypt(public,private,ciphertext) -> int. Adapt integer/tuple outputs to text and bytes. [Given-parameter exercise](../../Labs/Lab_03/Additional_Q01_Given_ElGamal/solution.py) shows the supplied-key case. This is the lab textbook construction protected by the outer verified package, not a standardized CCA-secure encryption format.
+
+6. ECC/ECDH instead of RSA: preserve the existing session-key pipeline
+
+A clean replacement is a KEM-style wrapper:
+
+text
+Generate normal random payload AES key
+Generate fresh ephemeral ECC pair
+ECDH(ephemeral private, registered recipient public)
+    -> HKDF-SHA256 -> key-encryption key
+AES-KWP(key-encryption key, payload AES key)
+Store ephemeral public PEM and wrapped key as JSON text
+
+
+Receiver reconstructs the same key-encryption key with its private key and the saved ephemeral public key, then unwraps the ORIGINAL random payload key. This leaves Generate_Symmetric_Key and payload encryption in place. It is different from deriving a new payload key and accidentally discarding the one already used.
+
+Copy Wrap_ECC and Unwrap_ECC and the Crypto.Protocol.DH/HKDF/AES/ECC/SHA256 imports from recipes. Use:
+
+python
+from Crypto.PublicKey import ECC
+
+def Generate_Receiver_Keys():
+    key = ECC.generate(curve="P-256")
+    return key.export_key(format="PEM"), key.public_key().export_key(format="PEM")
+
+def Encrypt_Key(key, receiver_public_pem):
+    return Wrap_ECC(key, receiver_public_pem)
+
+def Decrypt_Key(text, receiver_private_pem):
+    return Unwrap_ECC(text, receiver_private_pem)
+
+
+Change receiver PEM imports from RSA.import_key to ECC.import_key. Fingerprint ECC public DER, not RSA DER. Update Key_Setup in Skeleton 1 or Ensure_Local_Keys/Ensure_User_Keys plus Register_Key in the role versions. Enforce the intended curve, reject private keys in public registration, validate imported points and compare local private-derived public identity with registered public identity. Keep checking those fingerprints in metadata.
+
+Use Metadata key_wrap = ECDH-HKDF-SHA256-AES-KWP. The encrypted_key string now contains ephemeral_public and wrapped_key. JSON text goes into the existing encrypted_key.txt; no new top-level package field is necessary. Sign that entire text with the other package fields. Never persist the ephemeral private scalar in the public package.
+
+The tested wrapper works with NIST P-256, Curve25519 and Curve448 library keys. For X25519/X448 choose those agreement curves, not Ed25519/Ed448 signing curves. Other NIST curves can be selected if the question permits and both sides match. secp256k1/Brainpool require a different library (for example cryptography), with matching import/export/agreement changes; they are not accepted just by passing an unsupported curve name to PyCryptodome.
+
+7. Using the actual ECC and EC-ElGamal lab functions
+
+The lab ECC functions already encrypt arbitrary bytes using an internal hybrid, so they can encrypt the payload SESSION KEY bytes as their input:
+
+python
+def Encrypt_Key(key_bytes, recipient_public_pem):
+    public = ECC.import_key(recipient_public_pem)
+    return json.dumps(ecc_encrypt(public, key_bytes))
+
+def Decrypt_Key(text, recipient_private_pem):
+    private = ECC.import_key(recipient_private_pem)
+    return ecc_decrypt(private, json.loads(text))
+
+
+Copy ecc_encrypt/ecc_decrypt and their dependencies seal/open_seal/point_record/read_point/imports from [ECC lab](../../Labs/Lab_03/Q02_ECC/solution.py) or [additional ECC](../../Labs/Lab_03/Additional_Q02_ECC/solution.py). Those functions return a dictionary/bytes, not RSA ciphertext hex. The outer wrapper converts the dictionary to a text field. Do not call their text exercise/main functions from the skeleton.
+
+For the [healthcare EC-ElGamal lab](../../Labs/Lab_03/Additional_Q04_EC_ElGamal_Healthcare/solution.py), substitute ec_elgamal_encrypt/ec_elgamal_decrypt in the same adapters and copy the helper dependencies. Its random point R is encapsulated as C1=kG and C2=R+kQ; recovery gives R=C2-d*C1. This is not identical to the ephemeral ECDH recipe. Preserve both point coordinates and the inner authenticated-encryption fields. The lab point helpers assume P-256 and 32-byte coordinates; changing only the curve name to P-384 is insufficient.
+
+The [asymmetric comparison](../../Labs/Lab_03/Additional_Q05_Asymmetric_Comparison/solution.py) includes both constructions. Its full-message AES layer becomes an INNER layer protecting the session key if adapted this way; the skeleton's OUTER AES layer continues protecting the description. Do not mistakenly label one nested ciphertext as the original plaintext AES key.
+
+8. DH is key agreement: two valid workflow choices
+
+Choice A: derive a wrapping key, preserve the random payload key
+
+This is the finite-field equivalent of the ECC KEM adapter. Use the agreed lab p,g. The recipient has a long-lived DH exponent/public value. Sender creates a fresh ephemeral pair, computes shared secret with recipient public y, derives a wrapping key using the same KDF on both sides, and symmetrically wraps the payload key. Save ephemeral public value, group identifier, KDF parameters/salt if used, and wrapped key. The outer signature binds them.
+
+Copy dh_keypair/dh_shared and DH_P/DH_G from [Lab 3 DH](../../Labs/Lab_03/Q05_Diffie_Hellman/solution.py). Its dh_shared already produces 32 SHA-256-derived bytes and validates subgroup membership; do not call .encode() on those bytes or hash an integer's decimal string on only one side.
+
+Adapter outline, after receiver identity format is changed to {'p','g','y'} and private to {'p','g','x'}:
+
+python
+def Encrypt_Key(key, public):
+    ephemeral_private, ephemeral_public = dh_keypair(public['p'], public['g'])
+    wrapping_key = dh_shared(ephemeral_private, public['y'], public['p'])
+    wrapped = AES.new(wrapping_key, AES.MODE_KWP).seal(key)
+    return json.dumps({'ephemeral_public': str(ephemeral_public), 'wrapped': wrapped.hex()})
+
+def Decrypt_Key(text, private):
+    saved = json.loads(text)
+    wrapping_key = dh_shared(private['x'], int(saved['ephemeral_public']), private['p'])
+    return AES.new(wrapping_key, AES.MODE_KWP).unseal(bytes.fromhex(saved['wrapped']))
+
+
+Group parameters must come from a trusted registry/matching identifier, not arbitrary received values. Validate that registered p,g match the chosen group and that peer public values pass the lab's subgroup checks. Both sides derive the same bytes; neither private exponent is exchanged.
+
+Choice B: use agreement output directly as the payload key
+
+Generate the ephemeral pair and agreement BEFORE Encrypt, replacing Generate_Symmetric_Key at that call site. Encrypt with the derived key. Store ephemeral public/KDF parameters instead of an RSA-wrapped random key. At the receiver derive it BEFORE Decrypt. Rename/remove the Encrypt_Key/Decrypt_Key stage or explicitly turn it into agreement-record encoding. If you derive after encrypting with an unrelated random AES key, decryption will fail.
+
+The [enterprise RSA/DH lab](../../Labs/Lab_04/Q01_Enterprise_RSA_DH/solution.py) adds identity/key management. The [DH authentication lab](../../Labs/Lab_06/Q02_DH_And_Authentication/solution.py) adds HMAC. Bare agreement is not authenticated; keep the existing verified sender signature/public-key bindings. Replacing signatures with HMAC changes public-reviewer verification into shared-secret verification.
+
+9. Rabin instead of RSA wrapping
+
+Copy rabin_keys, rabin_roots, rabin_wrap_key and rabin_unwrap_key with dependencies from [hospital KMS](../../Labs/Lab_04/Q02_Rabin_Hospital_KMS/solution.py). Private primes are p,q congruent to 3 modulo 4; public identity is n. Wrapped output is an integer string; unwrapping returns bytes after testing the roots' marker/checksum.
+
+The existing lab wrapper supports exactly 16 key bytes and a 26-byte encoded block. For the skeleton's AES-256 key, either switch payload AES to 128 bits OR adapt the Rabin wrapper consistently:
+
+| Element | Lab AES-128 | AES-256 adaptation |
+| --- | --- | --- |
+| key length | 16 | 32 |
+| marker | 2 bytes | same |
+| checksum | 8 bytes | same |
+| encoded length | 26 | 42 |
+| extracted key slice | data[2:18] | data[2:34] |
+| checksum slice | data[18:] | data[34:] |
+| root width/bit limit | 26 bytes / 208 bits | 42 bytes / 336 bits |
+
+Use n large enough for the complete encoded block. Never select the first square root blindly. Public registration/import/fingerprints must use n/p/q dictionaries instead of RSA PEM. The lab's redundancy is an illustrative teaching format, not a standard secure Rabin padding scheme. There is no public PyCryptodome Rabin cipher API to substitute for these lab functions.
+
+10. Textbook RSA and homomorphic questions
+
+Raw RSA is c=pow(m,e,n) and m=pow(c,d,n). OAEP ciphertext multiplication does not decrypt to a useful plaintext product. For lab integer multiplication, validate each input in 1..n-1, multiply ciphertexts modulo n, decrypt, and compare against the product modulo n. See [RSA multiplication](../../Labs/Lab_07/Q02_RSA_Multiplication/solution.py) and [given textbook RSA](../../Labs/Lab_03/Additional_Q03_Textbook_RSA/solution.py).
+
+This is not a secure replacement for an arbitrary description file. If encoding a key into an integer, store its byte length, ensure it fits below n, and preserve leading zeros. The multiplicative exercise should normally be a separate arithmetic menu action rather than forcing RSA key-wrapping code to double as a finance sum.
+
+11. External tools and exercises that are not drop-ins
+
+[GnuPG](../../Labs/Lab_08/Additional_Q01_GnuPG/solution.py) uses an executable/keyring and fingerprint trust. Preserve its armored/binary envelope and recipient/signing fingerprints; a subprocess call plus keyring setup cannot be replaced by RSA.import_key. [Weak RSA attack](../../Labs/Lab_04/Additional_Q02_Weak_RSA_Attack/solution.py) needs factorization/attack inputs and outputs, not just Decrypt_Key. [DRM](../../Labs/Lab_04/Additional_Q01_ElGamal_DRM/solution.py) needs authorization, revocation and key lifecycle logic; changing the cipher alone does not implement those requirements.

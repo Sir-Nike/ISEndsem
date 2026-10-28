@@ -1,0 +1,150 @@
+# Signature, hash, HMAC and KDF replacement guide
+
+## 1. Separate the four hash uses
+
+There can be several independent choices in the same program:
+
+1. Record digest: Hash_Generate/Hash_Check.
+2. Message signature digest: SHA256.new inside DS_Sign/DS_Verify, or the chosen library signature function.
+3. Key wrapping/derivation: OAEP hashAlgo or the ECDH HKDF hash.
+4. Infrastructure: audit/storage signature hash, audit event hash, search HMAC and key fingerprints.
+
+A request for SHA-512 record hashing does not automatically change all four. Edit the question's intended operation and label it accurately. A signature library normally hashes the provided bytes through a hash object; do not accidentally sign a printed digest as a new message.
+
+## 2. SHA-256 to SHA-512, MD5, SHA-1 or SHA-3
+
+For a standalone record digest:
+
+```python
+from Crypto.Hash import SHA512
+import hmac
+
+def Hash_Generate(data):
+    return SHA512.new(data).hexdigest()
+
+def Hash_Check(data, expected):
+    return hmac.compare_digest(Hash_Generate(data), expected)
+```
+
+MD5.new, SHA1.new, SHA224.new, SHA384.new, SHA3_256.new and SHA3_512.new follow the same pattern. Change imports and Metadata's hash label. Digests are hex strings; SHA-256 is 64 characters, SHA-512 is 128, MD5 is 32, SHA-1 is 40. File storage remains text and does not require padding. If an exam requests MD5/SHA-1, reproduce that named exercise rather than silently calling it SHA-256; do not present these hashes as modern collision-resistant alternatives.
+
+SHAKE needs a fixed requested output length: SHAKE256.new(data).read(32).hex() gives 32 digest bytes. Choose the same length on both sides. A SHAKE object consumed once has advanced its stream; construct a fresh object when recomputing.
+
+The tested Hash_Reference(data,name) recipe supports the named fixed-output hashes. It does not change OAEP or a signature's fixed internal algorithm.
+
+### The shared-helper trap in Skeletons 2–4
+
+Hash_Generate is also called for public fingerprints, catalog packet digests, event-chain hashes and, in Skeleton 4, Paillier/search key IDs. Replacing it globally changes all these definitions, not just hash.txt. Existing records and audit chains then fail.
+
+For an exam that changes ONLY the record hash, use a separate Record_Hash(data) function and call it at packet creation and record hash comparison. Leave Hash_Generate as the infrastructure SHA-256 helper. In Skeleton 1 this means Send's digest calculation and Verify_Package's Hash_Check path; in Skeletons 2–4 it means Create_Packet and Verify_Packet. Keep the signature digest independently selected. Do not redirect every Hash_Check globally, because other checks use it for catalog/audit data.
+
+If the exam deliberately changes all shared hashes, update every dependent label/length/key identifier and use a fresh versioned store. Both Audit and Audit_Read must agree on the genesis previous-hash representation; never mix an old stored chain with a new recomputation rule.
+
+## 3. What the current signature functions expect
+
+Current sender private/public keys are ElGamal dictionaries. DS_Sign returns {'r':int,'s':int}; DS_Verify returns bool. The skeleton writes signature.txt as JSON text. It can also store a hex signature string with json.dumps and read it back with json.loads, provided the matching signature functions accept strings.
+
+For a new sender key type update:
+
+- Generate_Sender_Keys.
+- Key_Setup (Skeleton 1), Ensure_Local_Keys (Skeleton 2), or Ensure_User_Keys (Skeletons 3/4).
+- Sender key import/export and local pair matching.
+- Public registration validation in Skeleton 2 server or Skeleton 3/4 Register_Key.
+- Public_Fingerprint or the sender fingerprint expression in Skeleton 1 Metadata.
+- DS_Sign, DS_Verify and Metadata's signature label.
+- Tampering helpers that currently access signature['s'] or sender_public['y'].
+
+Role permissions and RSA receiver key wrapping can remain unchanged. The application root signing key in versions 2–4 can remain RSA-PSS even when the record signature changes.
+
+## 4. Worked replacement: ElGamal to RSA-PSS
+
+Copy Generate_Signing_Keys, Sign_Reference, Verify_Reference and HASHES/imports from [recipes](replacement_recipes.py). Add wrappers:
+
+```python
+def Generate_Sender_Keys():
+    return Generate_Signing_Keys("RSA-PSS")
+
+def DS_Sign(data, private_pem):
+    return Sign_Reference(data, private_pem, "RSA-PSS", "SHA256")
+
+def DS_Verify(data, signature, public_pem):
+    return Verify_Reference(data, signature, public_pem, "RSA-PSS", "SHA256")
+```
+
+The keys are now PEM strings and signature is hex text. Existing JSON text key files can still contain a JSON string: json.dumps(PEM) on write and json.loads on read. Do not accidentally pass a still-quoted JSON string directly to RSA.import_key. Alternatively change both writers/readers to raw PEM .txt. Pick one format consistently.
+
+Replace ElGamal's p/g/x pair check with:
+
+```python
+private_key = RSA.import_key(private_pem)
+if private_key.public_key().export_key() != RSA.import_key(public_pem).public_key().export_key():
+    raise ValueError("Sender identity mismatch")
+```
+
+In sender public registration, import RSA, reject has_private(), enforce the intended size, and normalize the public PEM. Do not leave the old {'p','g','y'} check. Fingerprint the normalized public DER or an agreed canonical public representation on both sides. Metadata signature becomes RSA-PSS-SHA256. Signature tampering can flip one byte of the hex string rather than assigning ['s'].
+
+RSA-PSS uses Crypto.Signature.pss and a hash object. RSA PKCS#1 v1.5 uses Crypto.Signature.pkcs1_15; use scheme RSA-v1_5 in the recipe and label it accordingly. Both use separate sender RSA keys; do not reuse the receiver private key as the sender identity merely because both are RSA. If a PSS salt length is specified, pass the same salt policy to sign and verify. API references: [PSS](https://www.pycryptodome.org/src/signature/pkcs1_pss), [PKCS#1 v1.5](https://www.pycryptodome.org/src/signature/pkcs1_v1_5).
+
+The [RSA signature walkthrough](../../Labs/Lab_06/Q00_RSA_Signature_Walkthrough/solution.py) and [RSA/SHA exercise](../../Labs/Lab_06/Additional_Q01_RSA_SHA_CIA/solution.py) are the corresponding lab sources. Copy algorithm functions, not interactive exercise/main loops.
+
+## 5. DSA and ECDSA
+
+The same recipe/wrappers work with scheme DSA or ECDSA. DSA generates a DSA-2048 pair; ECDSA generates a P-256 pair. Import keys with DSA.import_key or ECC.import_key and export the public key in the matching format. For ECC use export_key(format='PEM') or DER, not RSA's no-format assumption.
+
+DSS.new(key,'deterministic-rfc6979',encoding='der') signs a Crypto.Hash digest. Verification succeeds by returning None; catch the verification exception and return True on success. Returning the raw None from DS_Verify would make every valid signature look false. Randomized DSA/ECDSA uses mode fips-186-3 if explicitly requested. Both sides must use the same encoding: DER signatures are not the same bytes as binary r||s.
+
+Choose the specified curve/hash pair. For example P-256/SHA-256 and P-384/SHA-384. Ed25519 is not an ECDSA curve. DSA is not the same as textbook ElGamal signing even though both use finite groups. Validate registered key family/curve and reject private key material. [DSA/ECDSA API](https://www.pycryptodome.org/src/signature/dsa).
+
+## 6. Ed25519 and Ed448
+
+Use scheme Ed25519 or Ed448 in Generate_Signing_Keys/Sign_Reference/Verify_Reference, with ECC import/export and eddsa.new(key,'rfc8032'). Pure EdDSA signs the MESSAGE BYTES directly; do not pass a SHA256 object as if this were RSA-PSS. Its internal hash is fixed by the chosen EdDSA algorithm. The record's separate hash.txt may still be SHA-256.
+
+Prehash variants require the specific API inputs: Ed25519ph uses a SHA512 hash object; Ed448ph uses a SHAKE256 object. Both sides must agree on pure versus prehash, context bytes if used, and key curve. Merely setting hash_name='SHA512' in the pure recipe does not select a prehash variant. Context must match and is limited by the EdDSA format. [EdDSA API](https://www.pycryptodome.org/src/signature/eddsa).
+
+The receiver can continue using RSA-OAEP or an ECDH-capable key. Do not try to perform ECDH with an Ed25519 signing key; X25519 and Ed25519 are different operations/key uses.
+
+## 7. Retaining ElGamal or switching to Schnorr
+
+ElGamal sender generation already uses Crypto.PublicKey.ElGamal.generate. PyCryptodome's public sign method is unimplemented, so the skeleton's equations stay. [ElGamal lab](../../Labs/Lab_06/Q01_ElGamal_Schnorr_Signatures/solution.py) provides compatible arithmetic; wrap its tuple (r,s) into the signature dictionary or adapt the reader. Its exact digest choice/range checks must match your signer. Never reuse the secret signing nonce.
+
+For Schnorr copy signature_group, schnorr_challenge, schnorr_sign and schnorr_verify from that lab. Generate an order-q subgroup identity, retain p,q,h, secret x, and public y=h^x mod p. The signature contains challenge,response, not ElGamal r,s. Use an adapter such as:
+
+```python
+# Assuming the copied lab functions and the new key dictionaries:
+def DS_Sign(data, private):
+    e, s = schnorr_sign(data, private['p'], private['q'], private['h'], private['x'])
+    return {'challenge': e, 'response': s}
+
+def DS_Verify(data, signature, public):
+    try:
+        return schnorr_verify(data, (signature['challenge'], signature['response']),
+                              public['p'], public['q'], public['h'], public['y'])
+    except (ValueError, TypeError, KeyError):
+        return False
+```
+
+Update key generation, public registration, stored key dictionaries and pair checks accordingly. Keep the lab's length framing in schnorr_challenge identical on both sides; hashing only message bytes is not the same Schnorr challenge. Do not reinterpret existing ElGamal files as Schnorr merely by renaming fields.
+
+## 8. HMAC is a different verification model
+
+Crypto.Hash.HMAC.new(secret,data,digestmod=SHA256) produces a shared-secret authenticator. HMAC cannot be verified using a public signing key, and anyone who can verify with that secret can also generate a valid MAC. To replace a signature with HMAC, distribute/store an authentication secret only to authorized roles and redesign reviewer access explicitly. Renaming DS_Verify does not preserve public verification or non-repudiation.
+
+DH can establish that shared secret, but requires authenticated peer identities; its public values are not digital signatures. See [DH authentication lab](../../Labs/Lab_06/Q02_DH_And_Authentication/solution.py). Index HMAC keys, authentication HMAC keys, AES keys and audit keys should have separate roles or KDF contexts.
+
+## 9. Sign plaintext, its digest, or the encrypted package?
+
+The current skeleton signs canonical ENCRYPTED PACKAGE bytes. A public reviewer can verify it without plaintext. If a question explicitly says sign plaintext, move the plaintext-signature verification to the decrypting role and do not claim the reviewer independently validated hidden plaintext. It can verify an additional outer ciphertext signature if required.
+
+If the question says sign a hash, define the representation. RSA-PSS/SHA-256 normally signs a SHA256.new(original_data) object; that is the standard internally hashed-message signature interface. Passing the 64-character hex digest to SHA256.new instead signs SHA256(hex_digest_text), a different message. For the ElGamal skeleton, DS_Sign already hashes bytes once; give it the original chosen bytes unless deliberately adapting it to consume an already computed digest integer.
+
+Bind IDs, departments, algorithms, expiry/key IDs, encrypted amount and search-token fields that must resist modification. Changing only the description hash can leave metadata outside the intended signature if the package definition is carelessly narrowed.
+
+## 10. KDF and expiry: extra workflow, not a cipher constant
+
+For a password-derived AES key, use a password KDF such as Crypto.Protocol.KDF.PBKDF2 with explicit count/hash/salt and desired byte length. For random shared secrets (DH/ECDH), use HKDF with purpose-specific context. Do not treat a low-entropy password as a high-entropy HKDF master. Follow explicitly specified exam iteration counts, while noting when they are exercise-only.
+
+Store public salt, KDF name/count/hash, issued_at, expires_at and key ID in signed metadata. Derive a key of the payload cipher's required length: 24 bytes for AES-192; 32 for AES-256; doubled lengths for SIV. The receiver must have the same password/shared secret; keeping RSA wrapping instead can distribute the derived AES key to its recipient.
+
+Enforce expiry inside the actual decryption/key-recovery function BEFORE returning/using a key; checking only a menu display is bypassable. Signed metadata or a separate HMAC with an independently derived authentication key prevents silently extending expires_at. Include expiry/ID metadata in AAD and the signed package. Log a rejection without logging key/password data. Local-time expiry trusts the clock; retained secrets mean application-enforced expiry is not mathematical destruction of all future decryption capability.
+
+[Report PYQ](../../PYQ_Solutions/Q05_Report_Management/solution.py) has PBKDF2, 24-byte AES-192-CBC, 120-second expiry, HMAC keyword search and audit checks. Copy its full metadata/key-validity workflow if the question demands it. Existing password scrypt in Skeletons 2–4 authenticates users; it does not make their record AES keys expire.

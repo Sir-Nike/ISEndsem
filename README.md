@@ -40,3 +40,7 @@ Read the InfoSec basics, practice the relevant lab concept, then open the matchi
 ## Verification records
 
 [Lab validation](Labs/VALIDATION.md) and [PYQ validation](PYQ_Solutions/VALIDATION.md) describe previously performed program checks and their limitations. Documentation was reviewed on 29 October 2026: folder counts, coverage paths and local Markdown links match the current workspace. This documentation review does not constitute a new run of the cryptographic programs.
+
+## Adapting a skeleton
+
+The [replacement guides](skeleton/Replacement_Guide/README.md) explain exact edits for each skeleton, with tested algorithm recipes and lab references. Markdown and plain-text versions are provided.

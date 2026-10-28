@@ -1,5 +1,7 @@
 # Skeleton 2: simple socket client/server with roles
 
+For algorithm changes, read [the detailed replacement guide](replacement_guide.md), with exact function edits and links to the common recipes.
+
 ## Start it
 
 Install the single dependency if needed:

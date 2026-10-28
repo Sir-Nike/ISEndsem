@@ -44,3 +44,12 @@ First run asks for an admin password. Log in as admin to create users. Have the 
 ```
 
 Uses PyCryptodome plus phe for library-based Paillier. First run initializes its own admin/key/data state. Create users and let the receiver register before saving records. Search returns permitted metadata with no decryption; finance decrypts only the calculated aggregate.
+
+## Replacing algorithms for an exam question
+
+Start with the [replacement guide overview](Replacement_Guide/README.md). Each skeleton has its own detailed replacement_guide.md and replacement_guide.txt naming exact functions and integration edits. Shared chapters cover all AES modes, DES/3DES, RSA variants, ElGamal, ECC/EC-ElGamal, DH/ECDH, Rabin, signatures, hashes/KDFs, homomorphic operations, search and other lab workflows. Copyable recipe functions and validation notes are included; the original working programs remain unchanged.
+
+- [Skeleton 1 edit map](Skeleton_1/replacement_guide.md)
+- [Skeleton 2 edit map](Skeleton_2/replacement_guide.md)
+- [Skeleton 3 edit map](Skeleton_3/replacement_guide.md)
+- [Skeleton 4 edit map](Skeleton_4/replacement_guide.md)
