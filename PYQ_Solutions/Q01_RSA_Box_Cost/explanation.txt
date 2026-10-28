@@ -1,0 +1,207 @@
+Q1: RSA encrypted box-cost multiplication
+
+1. The original question
+
+Take two inputs: number of boxes, cost of each box.
+Validate the input (input should lie between 1 to n-1 where n is the RSA parameter) then proceed.
+Encrypt the two inputs and pass it to a function which calculates their multiplication mod N.
+Perform this calculation on encrypted values only.
+Encryption is via RSA with values mentioned in the exam.
+If the products match after decryption print verified.
+Menu driven code to be followed and a modular approach is expected. No hardcoded values
+
+2. What you are building, in plain English
+
+Calculate a product while its two inputs remain encrypted. This uses textbook RSA, not padded RSA-OAEP.
+
+This solution is intentionally split into small functions. Read the menu first to understand what the user can do, then follow the function calls. Every function has an input/operation/output/usage comment in the Python source and is explained again below.
+
+3. Basic vocabulary before reading the code
+
+| Term | Meaning in these programs | What you should say in a viva |
+|---|---|---|
+| Plaintext | Original message or record bytes | Encryption starts from plaintext. |
+| Ciphertext | Encrypted bytes or encrypted integer | You need the correct key to recover the original value. |
+| AES key | Secret 16/24/32 bytes | AES-192 means 24 bytes, AES-256 means 32; block size remains 16 bytes. |
+| IV / nonce | Per-encryption parameter stored with ciphertext | It is not the secret key; use a fresh value with each encryption. |
+| SHA/MD5 digest | Fixed-size fingerprint of exact bytes | Hashing is one-way, so it cannot be decrypted. |
+| Signature | Private-key proof over a hash | Sign with private key; verify with the trusted public key. |
+| HMAC token | Deterministic keyed lookup value | The same normalized keyword gives the same token for indexing. |
+| Paillier aggregate | Product of ciphertexts modulo n squared | It decrypts to a sum of plaintext numbers modulo n. |
+| Canonical JSON | Sorted keys and stable separators encoded as UTF-8 | Sender and verifier hash exactly the same representation. |
+| Expiry | Persisted issue time plus lifetime | Restarting must not give an old key another lifetime. |
+
+
+4. Install and run
+
+The only third-party Python package is PyCryptodome. From the project root, where Labs and PYQ_Solutions live:
+
+python3 -m venv .venv
+.venv/bin/python -m pip install -r PYQ_Solutions/requirements.txt
+.venv/bin/python PYQ_Solutions/Q01_RSA_Box_Cost/solution.py
+
+
+Your existing .venv already has this package in the current workspace. On Windows use .venv\Scripts\python.exe instead. If your terminal is inside this question folder, run ../../.venv/bin/python solution.py. Enter normal menu choices; there is no special command-line run mode. When a default appears in square brackets, Enter accepts it. Q1 deliberately requires its exam parameters without numeric defaults.
+
+First-run account passwords are hidden while typing in a normal terminal. Remember the passwords you set: the programs do not install default shared passwords. The KDF password used for a report or voter credential is distinct from a role login password.
+
+5. A complete worked run
+
+Use menu 1 → input mode 1 → p=61, q=53, e=17. The program derives n=3233 and d=2753. Choose menu 2 and enter 7 boxes at cost 3. Choose 3 to multiply ciphertexts, then 4 to decrypt/verify. The recovered product is 21. These numbers are a worked example in this explanation only; code prompts have no fixed defaults for exam parameters.
+
+6. The algorithm, step by step
+
+1. Read/derive n,e,d from values supplied in the exam.
+2. Validate boxes and cost individually in 1..n-1 before encrypting.
+3. Compute c_boxes=boxes^e mod n and c_cost=cost^e mod n.
+4. Pass only c_boxes, c_cost and n into multiply_ciphertexts.
+5. Compute c_product=c_boxes*c_cost mod n.
+6. Decrypt c_product^d mod n; compare with boxes*cost modulo n.
+
+Cryptographic ciphertexts, IVs, salts, nonces and signatures can vary between runs because encryption and key generation use randomness. Compare the recovered plaintext, verification booleans, search results and totals instead of expecting a fixed long ciphertext string. Q1 uses raw deterministic RSA, so its fixed worked example does reproduce the same small ciphertext integers.
+
+7. What is saved and why
+
+No data files are required; inputs live in memory for the current menu session.
+
+All generated state is written beside the script under the documented subfolders. Changing your terminal's current directory does not redirect the records. Reopening loads the previous keys and data. Keep the key files with the encrypted data; deleting keys does not decrypt or reset existing records. To start a completely separate practice run, copy the question folder to a new location before generating data.
+
+8. Every Python function explained
+
+Read functions in their file order. Inputs named public hold shareable encryption/verification parameters; private, keys, record_keys or credentials may contain secrets and must not be sent with an untrusted request.
+
+File: solution.py
+
+ask_text(label, default=None)
+
+Input: prompt and optional default. Read terminal text; Enter accepts a supplied default.
+
+Output: nonempty string. Use ask_text('Patient ID') when a value must be entered.
+
+Follow these calls when reading the implementation: ValueError, input.
+
+ask_int(label, default=None, minimum=None, maximum=None)
+
+Input: prompt, optional default and inclusive bounds. Read and validate an integer.
+
+Output: integer, or ValueError. Use for menu parameters, counts and cryptographic sizes.
+
+Follow these calls when reading the implementation: ask_text, ValueError.
+
+configure_rsa()
+
+Input: choice of supplied n/e/d or supplied p/q/e. Read every RSA value from the user.
+
+Output: n/e/d dictionary after arithmetic checks. No exam parameters are hardcoded.
+
+Follow these calls when reading the implementation: ask_text, ask_int, pow, ValueError, isPrime.
+
+encrypt_inputs(number_of_boxes, cost_per_box, public)
+
+Input: two integers and public n/e dictionary. Check both values lie in 1..n-1 and encrypt separately.
+
+Output: two raw RSA ciphertext integers. The multiplication function receives only these ciphertexts.
+
+Follow these calls when reading the implementation: ValueError, pow.
+
+multiply_ciphertexts(first, second, n)
+
+Input: two ciphertexts and public modulus only. Multiply them modulo n without decryption.
+
+Output: RSA ciphertext of the plaintext product modulo n. No original inputs or private key are needed.
+
+Follow these calls when reading the implementation: ValueError.
+
+decrypt_and_verify(ciphertext, parameters, number_of_boxes, cost_per_box)
+
+Input: product ciphertext, RSA parameters and original inputs for the final comparison only.
+
+Output: recovered product integer and verification boolean; print modular and ordinary products.
+
+Follow these calls when reading the implementation: pow.
+
+main()
+
+Input: menu choices and user-supplied RSA parameters/box values. Enforce the operation order.
+
+Output: input ciphertexts, ciphertext-only product and final verification. Run python solution.py.
+
+Follow these calls when reading the implementation: ask_text, configure_rsa, ask_int, encrypt_inputs, ValueError, multiply_ciphertexts, decrypt_and_verify.
+
+9. How to read the menu code
+
+solution.py begins here when you run it:
+
+def main():
+    """Input: menu choices and user-supplied RSA parameters/box values. Enforce the operation order.
+    Output: input ciphertexts, ciphertext-only product and final verification. Run python solution.py.
+    """
+    parameters = None
+    inputs = None
+    ciphertexts = None
+    product = None
+    while True:
+        print(
+            "\n1 Configure RSA  2 Input and encrypt boxes/cost  3 Multiply ciphertexts  4 Decrypt and verify  0 Exit"
+        )
+        try:
+            choice = ask_text("Choice")
+            if choice == "0":
+                return
+            if choice == "1":
+                parameters = configure_rsa()
+                inputs = ciphertexts = product = None
+            elif choice == "2":
+                if parameters is None:
+                    raise ValueError("Configure RSA first.")
+                boxes = ask_int("Number of boxes", minimum=1, maximum=parameters["n"] - 1)
+                cost = ask_int(
+                    "Cost per box (integer units)", minimum=1, maximum=parameters["n"] - 1
+                )
+                ciphertexts = encrypt_inputs(boxes, cost, parameters)
+                inputs = (boxes, cost)
+                product = None
+                print("Encrypted boxes:", ciphertexts[0], "Encrypted cost:", ciphertexts[1])
+            elif choice == "3":
+                if ciphertexts is None:
+                    raise ValueError("Encrypt the inputs first.")
+                product = multiply_ciphertexts(*ciphertexts, parameters["n"])
+                print("Encrypted product:", product)
+            elif choice == "4":
+                if product is None:
+                    raise ValueError("Multiply the ciphertexts first.")
+                decrypt_and_verify(product, parameters, *inputs)
+            else:
+                print("Choose a listed option.")
+        except (ValueError, TypeError, KeyError, OverflowError) as error:
+            print("Rejected:", error)
+
+
+The if __name__ == "__main__": main() line at the bottom starts the menu when the file is run directly. Importing the file to reuse its functions does not automatically start the menu. A try/except around each operation turns ordinary bad input into a readable error so you can return to the menu.
+
+10. Python details that matter here
+
+- text.encode() converts Python text into bytes. Cryptographic libraries operate on bytes, not Python strings.
+- bytes.fromhex(text) restores bytes from a printed hexadecimal string; .hex() does the reverse.
+- A dictionary such as record['signature'] keeps named fields together without defining a class.
+- pow(a, e, n) computes modular exponentiation efficiently; pow(a, -1, n) computes a modular inverse when one exists.
+- canonical(record) is used before hashing/signing. Never hash an ordinary dictionary representation or rely on key insertion order.
+- A verifier must check the signature with a previously trusted public key. A key supplied by an unknown sender does not prove identity.
+- Menu code gathers inputs. Separate functions do cryptography, indexing, authorization and storage so you can adapt the question without rewriting everything.
+- Cryptographic API calls such as AES.new(...) return library cipher objects. You do not define classes or use object-oriented application design in these solutions.
+
+11. Verification, failures and exam modifications
+
+- First perform the successful worked run, then repeat with different input values.
+- Try a missing record ID, an unlisted menu choice, the wrong role, an incorrect password, or a changed ciphertext/signature where applicable. The operation should fail rather than print an apparently valid result.
+- Always verify before exposing selected plaintext. Do not continue decryption after a failed integrity check.
+- Search must use an index; do not decrypt every record to test whether a keyword occurs.
+- For homomorphic totals, aggregation receives the public key and ciphertexts. Keep private-key decryption at the final result step.
+- Match the question's exact key length, hash and cipher mode. AES-192-CBC is not interchangeable with AES-256-GCM when the question specifically requests CBC.
+- If the examiner changes field names or the application story, adapt the input/record dictionaries and menus. Keep the canonical serialization, key handling, verification order and mathematical functions.
+- If you edit data legitimately, encrypt/sign the new state through the authorized function. Editing JSON directly is a tampering test, not an authorized update.
+
+12. Assumptions, corrections and practical limits
+
+The property applies to raw RSA. OAEP is correct for secure message encryption but cannot replace raw RSA in this arithmetic exercise. Costs are integers (use paise if needed). Inputs may both be less than n while their product is greater than n: compare modulo n, and display the ordinary product separately. Supplied n/e/d can be checked on sample values but cannot be fully certified from those three values alone.
+

@@ -1,0 +1,89 @@
+# Lab 7 Q2: RSA homomorphic multiplication
+
+## What the manual asks
+
+Encrypt 7 and 3 using basic RSA, multiply ciphertexts, decrypt the product and verify.
+
+## Start here: the idea in plain English
+
+For textbook RSA, c1=m1^e mod n and c2=m2^e mod n. Their product modulo n equals (m1*m2)^e mod n. Decrypt the product with d and compare against m1*m2 modulo n. Do not use OAEP here: randomized padding destroys this raw arithmetic relationship.
+
+## How to run
+
+From this question folder, run:
+
+```bash
+../../../.venv/bin/python solution.py
+```
+
+The program is interactive. If you installed dependencies into another environment, use that environment's Python instead. Read `Labs/README.md` for setup. Paths above assume the environment is in the project root, beside `Labs`.
+
+Press 1 to run an exercise, enter your values or press Enter for the displayed default, and press 0 to exit. Input conversion and validation errors are printed without terminating the interactive menu. Each function can also be imported and called separately.
+
+## Step-by-step solution
+
+1. Start the program and select Run. Read the displayed default inputs before changing them.
+2. Follow the input prompts. Text is encoded to bytes when required; numeric inputs are checked before cryptographic operations.
+3. Read the `exercise()` function below: it connects the functions in the order needed for this question.
+4. Compare the printed output with the expected result, and repeat using a different input.
+
+```python
+def exercise():
+    """Input: toy primes, exponent and two message integers. Demonstrate raw RSA multiplication.
+    Output: ciphertexts, encrypted product, decrypted product and equality modulo n.
+    """
+    p = ask_int("Prime p", 61, 3)
+    q = ask_int("Prime q", 53, 3)
+    e = ask_int("Public exponent", 17, 2)
+    n, e, d = raw_rsa_keys(p, q, e)
+    a = ask_int("First integer", 7, 0, n - 1)
+    b = ask_int("Second integer", 3, 0, n - 1)
+    c1 = pow(a, e, n)
+    c2 = pow(b, e, n)
+    combined = multiply_encrypted(c1, c2, n)
+    result = pow(combined, d, n)
+    print("n:", n, "Ciphertexts:", c1, c2, "Encrypted product:", combined)
+    print("Recovered:", result, "Expected modulo n:", a * b % n, "Verified:", result == a * b % n)
+```
+
+Follow the calls in `exercise()` from top to bottom. It obtains the inputs, calls the small functions that do the work, and prints intermediate values and the final result. Bytes are shown as hexadecimal when ordinary text would be unreadable. A successful round trip prints a recovered message equal to the input; verification examples also show a changed message being rejected where applicable.
+
+## Every function explained
+
+### `ask_text(label, default)`
+
+Input: a prompt and default string. Read text, or use the default when Enter is pressed.
+Output: a string. Use ask_text('Message', 'hello') to let the user choose a message.
+
+### `ask_int(label, default, minimum, maximum)`
+
+Input: prompt, default integer, optional inclusive limits. Read and validate a number.
+Output: an integer; raise ValueError on bad input. Use for keys, counts, or amounts.
+
+### `raw_rsa_keys(p, q, e)`
+
+Input: distinct primes p/q and exponent coprime to phi. Compute textbook RSA parameters.
+Output: n,e,d tuple. Use only in the arithmetic demonstration, not for secure messaging.
+
+### `multiply_encrypted(c1, c2, n)`
+
+Input: two raw RSA ciphertext integers and modulus. Multiply only ciphertext values.
+Output: ciphertext of the product modulo n. A private key is not needed here.
+
+### `exercise()`
+
+Input: toy primes, exponent and two message integers. Demonstrate raw RSA multiplication.
+Output: ciphertexts, encrypted product, decrypted product and equality modulo n.
+
+### `main()`
+
+Input: terminal choices. Run the exercise safely.
+Output: printed results. Use python solution.py and choose a menu option.
+
+## What to change during an exam
+
+Change values through the prompts first. For a different scenario, replace the example messages or record fields in `exercise()`, and keep the cryptographic functions. Match the requested algorithm, key size, mode, and hash exactly. Store IVs/nonces alongside ciphertext when needed. Keep private keys private. Hashing cannot be decrypted; encryption can. A hash by itself does not prove who sent a message.
+
+## Notes and limitations
+
+This is textbook RSA with small parameters because the exercise is about homomorphic arithmetic. It is intentionally separate from secure RSA-OAEP encryption. Products wrap modulo n; they are not unrestricted integers.

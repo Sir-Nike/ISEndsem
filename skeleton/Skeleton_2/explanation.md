@@ -1,0 +1,469 @@
+# Skeleton 2: simple socket client/server with roles
+
+## Start it
+
+Install the single dependency if needed:
+
+```bash
+.venv/bin/python -m pip install -r skeleton/requirements.txt
+```
+
+Terminal 1:
+
+```bash
+.venv/bin/python skeleton/Skeleton_2/server.py
+```
+
+On the first run, choose the admin login password (at least eight characters). The server creates its files and immediately starts listening. On later runs it loads existing files and starts automatically. Ctrl+C stops it. There is no server setup menu, certificate setup or separate operator password.
+
+Terminal 2:
+
+```bash
+.venv/bin/python skeleton/Skeleton_2/client.py
+```
+
+Log in as admin with that password. Manage users -> Create user lets you create alice as sender, bob as receiver, and reviewer as reviewer. Set passwords of your choice. Log out and log in as bob once: his RSA pair is generated locally and his public key is registered automatically. Log out. Log in as alice: her ElGamal pair is generated/registered automatically. Choose Send, enter bob, record ID R001, and a message. Log in as reviewer to verify, or bob to verify and decrypt.
+
+Keep server.py, client.py and crypto_helpers.py together. All generated storage is .txt. The single dependency is PyCryptodome. The programs default to 127.0.0.1:5056. To use another address, edit HOST/PORT in both scripts. This is a plain TCP lab exercise: login credentials and session tokens are not protected against a network observer, so use the local/trusted lab setup.
+
+## Compact menus
+
+```text
+Main:      1 Login                       0 Exit
+Sender:    1 Enter and send message      2 View my submissions             0 Logout
+Reviewer:  1 View records                2 Verify record                   0 Logout
+Receiver:  1 View received messages      2 Verify and decrypt message      0 Logout
+Admin:     1 Manage users                2 View logs and verify audit
+           3 Tamper with a practice record                                0 Logout
+```
+
+Manage users has create/disable/list options. Key creation/registration, encryption/signing, permission checks, logging and auditing run behind these actions. Do not add manual setup actions for each algorithm.
+
+## The networking is just sockets and JSON
+
+Client() opens a connection using socket.create_connection(), calls Send_JSON(), calls Receive_JSON(), closes the socket, and returns the reply. The server creates a socket, binds, listens, accepts a connection, reads its request, calls Dispatch(), replies, and closes that connection. It repeats for the next request. Login state is retained by the server between these connections.
+
+Requests look like this:
+
+```text
+{action: 'verify', token: login_token, args: {record_id: 'R001'}}
+```
+
+Replies are either {ok: true, result: ...} or {ok: false, error: ...}. No request includes a client-supplied role that the server trusts.
+
+TCP can split data across recv() calls. Send_JSON prefixes the JSON body with a four-byte length. Read_Exact loops until the expected number of bytes arrive. Receive_JSON checks the 4 MiB limit and reconstructs the object. This small framing helper avoids truncating a packet or assuming one recv() returns the whole message. Connections have timeouts and are handled sequentially. Optional stop/count arguments in Server_Start exist only for automated checks; ordinary code calls Server_Start().
+
+## The workflow
+
+### 1. Login and automatic key setup
+
+The server saves salted scrypt password verifiers in signed users.txt, not raw passwords. Login returns a random token with a 30-minute lifetime; the token lives only in memory. Require checks it, resolves the enabled user and role from signed account storage, then checks the operation's permission. Every server endpoint checks permissions independently of the menu. Five failed logins for a username temporarily lock it for 60 seconds.
+
+Sender has a local ElGamal private/public pair; receiver has a local RSA private/public pair. Ensure_Local_Keys generates a pair on the account's first client use and registers only its public half. Existing public registrations cannot be silently changed. Missing local private keys for an already registered identity must be restored, not regenerated. The server has neither sender nor receiver private keys.
+
+### 2. Sender enters and sends
+
+1. Get the receiver's registered RSA public key from the server. Pin_Public saves a local copy and refuses an unexpected later change.
+2. Read sender's local signing pair. Create_Packet converts plaintext to UTF-8 bytes.
+3. Generate a fresh 32-byte AES key and 12-byte nonce. Encrypt using AES-256-GCM; authenticate metadata as AAD.
+4. Wrap the AES key with RSA-2048 OAEP/SHA-256 using the receiver public key.
+5. Build a package with ciphertext, nonce, tag, wrapped key, metadata and both public keys. Metadata names ID, sender, receiver, algorithms and key fingerprints.
+6. Hash canonical package bytes with SHA-256 and sign the same bytes using ElGamal/SHA-256. The signature function hashes once internally; do not pass the printed digest as a second message by accident.
+7. Save separate local .txt artifacts and upload the encrypted/public packet. The latest sender AES key is saved privately as requested, but never uploaded.
+8. Server checks session sender against signed sender, validates registered public keys, hash, signature and metadata, and rejects duplicate IDs. It stores accepted records and audits the submission.
+
+### 3. Reviewer verifies
+
+Choose a record. The server checks role/access, signature, hash, metadata/key fingerprints and catalog binding. It returns the individual outcomes and overall. Reviewers never get a decrypt/download permission.
+
+### 4. Receiver verifies and decrypts
+
+Choose an addressed record. The server checks ownership and stored integrity, audits the download and returns the encrypted packet plus registered public keys. The client checks ID/recipient, trusted key bindings, signature and hash again. Only then does it load its local RSA private key, unwrap AES, and call GCM decrypt_and_verify with the original AAD. Text is printed only after the tag passes. Recovered plaintext/AES key is not saved.
+
+The server audits a download, not successful decryption: it cannot independently observe what happens inside the receiver client. Sender/reviewer/admin accounts cannot download records through the receiver endpoint. Senders see their own submissions; receivers see addressed messages; reviewer/admin can inspect public record summaries.
+
+### 5. Persistence and tamper checks
+
+Signed catalog.txt maps ID to sender, recipient, received time and complete packet digest. Every stored record has its own directory. Check_Stored verifies both the original sender's signature and the server's catalog binding, so editing metadata, signatures, hashes or wrapped keys cannot silently replace a record. Changed/missing files yield overall=False, produce a detection event when checked, and prevent download.
+
+Snapshot files use a temporary .txt and atomic replacement. The entire record/catalog/audit update is not one transaction: a crash can leave an orphan folder or incomplete submission. The server is intentionally sequential; run one server process per storage directory.
+
+## Logs, audit, and tampering practice
+
+server_log.txt records operation names, peer addresses and error categories, never request bodies/passwords/tokens/plaintext/private keys. It is an unsigned operational log.
+
+audit.txt is a signed snapshot of hash-chained events. Each event contains sequence, previous hash, UTC server time, actor, action and non-secret details. Audit_Read checks the snapshot signature and every chain link. Modification, reordering or tail removal without a valid new signature fails. A separate server RSA-PSS/SHA-256 key signs the audit, account store and catalog; it is not a sender or receiver key.
+
+Admin's tamper action copies a record into tamper_practice/ and changes one artifact without re-signing. Targets: ciphertext, nonce, tag, encrypted_key, metadata, public_key, signature, hash, audit. Audit tampering removes an event from a copy. Results should show overall=False or audit_valid=False; the original stays valid. The exercise itself is logged in the original signed audit.
+
+If a live record file is changed outside the app, its next check detects it and download is refused. Modifying private keys/trusted account files can destroy access and is not the intended exercise. If audit integrity fails, the app refuses normal work rather than automatically signing corrupted events. A completely restored old valid copy of all signed files is not detectable without an external trusted checkpoint. Audit time is the server clock, not third-party timestamp authority time.
+
+## Where the .txt files go
+
+```text
+server_data/
+  signing_private_key.txt         owner-only local server audit/storage key
+  signing_public_key.txt
+  users.txt                       signed account roles/verifiers/public registrations
+  catalog.txt                     signed record index and packet digests
+  audit.txt                       signed hash-chained audit
+  server_log.txt                  operational logging
+  records/<ID>/
+    ciphertext.txt, nonce.txt, tag.txt, encrypted_key.txt,
+    metadata.txt, sender_public.txt, receiver_public.txt,
+    signature.txt, hash.txt
+  tamper_practice/<ID>/            modified practice copies
+
+client_data/<username>/
+  keys/private_key.txt            local sender ElGamal or receiver RSA private key
+  keys/public_key.txt
+  keys/symmetric_key.txt          sender's latest AES key; not uploaded
+  trusted_keys/                   saved public-key copies
+  outbox/<ID>/                    separate .txt artifacts for submissions
+  inbox/<ID>/                     separate .txt artifacts for received ciphertext
+```
+
+JSON/hex/PEM are text inside .txt files. These encodings are not encryption. Private files get owner-only permissions and remain unencrypted for exam simplicity. Keep users' private client files off the server. With several roles on one OS account the menus enforce server API permissions, but cannot stop the OS user inspecting somebody else's local private files. Separate machines/accounts are needed for that stronger isolation. Public-key trust assumes an honest server/registration process in this plain-socket exercise.
+
+## Algorithms and how to replace them
+
+The message algorithms are unchanged from Skeleton 1: AES-256-GCM, RSA-2048 OAEP/SHA-256 key wrapping, SHA-256 hashing, ElGamal/SHA-256 signatures. ElGamal defaults to a 256-bit safe-prime practice group for quick runs, not a production size; change Generate_Sender_Keys to the required exam parameters before first registration.
+
+Edit algorithm functions in crypto_helpers.py. Keep inputs/outputs consistent so the rest of the workflow can reuse them. Encrypt returns ciphertext/nonce/tag text in a dictionary; Decrypt returns bytes. Encrypt_Key returns encrypted-key text, Decrypt_Key key bytes. DS_Sign returns JSON-compatible signature data; DS_Verify returns bool. Hash_Generate returns text; Hash_Check returns bool.
+
+If changing schemes, also adapt key generation, Metadata labels, Register_Key validation and Save_Packet/Read_Packet fields. CBC needs IV/padding instead of GCM nonce/tag. A signature scheme change requires matching public-key registration/verification, not just a changed signing function. Server audit signatures are separate from the question's message signature.
+
+No Paillier, searchable encryption, key expiry, trusted timestamps, threshold decryption, password recovery or key rotation is included. Add those only when a question requires them.
+
+## Library usage
+
+Use the relevant PyCryptodome API for each operation: Crypto.Cipher.AES for AES-GCM, Crypto.PublicKey.RSA for RSA key pairs, Crypto.Cipher.PKCS1_OAEP for AES-key wrapping, Crypto.Hash.SHA256 for hashing, and Crypto.PublicKey.ElGamal.generate for sender key generation. Skeletons 2 and 3 also use Crypto.Protocol.KDF.scrypt for password verifiers and Crypto.Signature.pss for the separate application audit/storage signatures.
+
+ElGamal.generate returns library integer values, converted with int() for existing JSON/.txt storage. Its generator belongs to an order-q subgroup of the safe-prime group, where p=2q+1. Registration accepts these library-generated keys and the earlier full-order keys. Existing keys are reused, not regenerated.
+
+PyCryptodome's public ElGamal sign() method raises NotImplementedError; there is no usable public matching signature API. DS_Sign and DS_Verify therefore retain the textbook equations, using Crypto.Hash.SHA256 for their digest. They do not call the library's private _sign/_verify methods. Standard Python still handles menus, files, JSON, constant-time comparisons, login tokens and modular arithmetic where appropriate.
+
+## Every function: inputs, operation, outputs and usage
+
+### crypto_helpers.py
+
+#### `Canonical(value)`
+
+Input: JSON-compatible value. Sort keys and encode consistently as UTF-8.
+Output: bytes. Use Canonical(package) identically before hashing, signing and verification.
+
+#### `Write_Text(path, text, private=False)`
+
+Input: destination Path, text str and private flag. Save a UTF-8 .txt file.
+Output: None. Private files get owner-only permissions; public artifacts use normal permissions.
+Use Write_Text(KEYS / 'sender/private_key.txt', json_text, True).
+
+#### `Read_Text(path)`
+
+Input: text-file Path. Read UTF-8 without changing its contents. Output: str or file error.
+
+#### `Generate_Receiver_Keys(bits=2048)`
+
+Input: RSA modulus bits, default 2048. Generate matching receiver private/public keys together.
+Output: (private PEM str, public PEM str). Use the public key to wrap AES, private to unwrap.
+
+#### `Generate_Sender_Keys(bits=256)`
+
+Input: ElGamal modulus bits, default 256 for quick practice (not a production size).
+Let Crypto.PublicKey.ElGamal.generate create p,g,x,y using secure random bytes.
+Output: (private dict {p,g,x}, public dict {p,g,y}); int() makes library values JSON-compatible.
+Use Generate_Sender_Keys(2048) when the exam requires a larger modulus.
+
+#### `Generate_Symmetric_Key()`
+
+Input: none. Generate fresh 32 random bytes. Output: AES-256 key bytes; use once per message.
+
+#### `Encrypt(plaintext, key, aad)`
+
+Input: plaintext bytes, AES key bytes and metadata bytes as AAD.
+Encrypt using AES-256-GCM with fresh 12-byte nonce. Output: hex dict ciphertext/nonce/tag.
+Use Encrypt(text.encode(), key, Canonical(metadata)); caller saves all three outputs.
+
+#### `Decrypt(envelope, key, aad)`
+
+Input: hex envelope dict, recovered AES key, identical metadata bytes.
+Verify GCM tag and decrypt. Output: authenticated plaintext bytes; ValueError on altered data.
+Never return a plaintext obtained without the tag check.
+
+#### `Encrypt_Key(key, receiver_public)`
+
+Input: AES key bytes and receiver public PEM str. RSA-OAEP/SHA-256 encrypt only that key.
+Output: encrypted key hex str. Use Encrypt_Key(key, receiver_public); not for encrypting files.
+
+#### `Decrypt_Key(encrypted_key, receiver_private)`
+
+Input: encrypted key hex str and matching receiver private PEM str.
+RSA-OAEP/SHA-256 unwraps AES key. Output: original key bytes or ValueError on failure.
+
+#### `DS_Sign(data, private)`
+
+Input: canonical package bytes and ElGamal private dict {p,g,x}.
+Public ElGamal.sign() is unimplemented; apply the signature equations here.
+Hash bytes with SHA-256; choose fresh k coprime to p-1; compute r=g^k, s=(h-x*r)/k mod p-1.
+Output: dict {r,s}. Never reuse k. Use DS_Sign(Canonical(package), sender_private).
+
+#### `DS_Verify(data, signature, public)`
+
+Input: package bytes, signature {r,s}, trusted public dict {p,g,y}.
+Compare g^SHA256(data) with y^r*r^s modulo p. Output: bool; no private key/plaintext needed.
+
+#### `Hash_Generate(data)`
+
+Input: bytes. Calculate SHA-256. Output: 64-character hex digest str; use on canonical package.
+
+#### `Hash_Check(data, expected)`
+
+Input: package bytes and saved hex digest. Recompute and compare. Output: bool.
+A hash alone does not authenticate data; signature verification must also succeed.
+
+#### `Public_Fingerprint(public, kind)`
+
+Input: public ElGamal dict or RSA PEM, and 'sender'/'receiver'. Output: SHA-256 identifier.
+RSA is normalized to DER; ElGamal uses sorted JSON. Private values must never be passed here.
+
+#### `Metadata(record_id, sender, receiver, sender_public, receiver_public)`
+
+Input: ID, two usernames and registered public keys. Output: immutable public metadata dict.
+Its identities/algorithm labels/fingerprints are covered by the signature and GCM AAD.
+
+#### `Create_Packet(text, record_id, sender, receiver, sender_private, sender_public, receiver_public)`
+
+Input: plaintext str, IDs, sender private/public key and receiver public key.
+Output: (packet dict, fresh AES key bytes). Encrypt/sign/hash locally; no private key enters packet.
+
+#### `Verify_Packet(packet, sender_public, receiver_public)`
+
+Input: packet plus independently trusted sender/receiver public keys. Output: boolean checks.
+Verify identities/metadata/signature/hash; malformed artifacts yield overall=False, never plaintext.
+
+#### `Save_Packet(packet, folder)`
+
+Input: packet and destination Path. Output: None. Save each artifact separately in .txt files.
+Contains only encrypted/public data: ciphertext, nonce, tag, wrapped key, metadata, keys, DS, hash.
+
+#### `Read_Packet(folder)`
+
+Input: artifact folder Path. Output: reconstructed packet; missing/malformed files raise errors.
+
+#### `Send_JSON(connection, value)`
+
+Input: connected socket and JSON object. Send 4-byte network-order length then body.
+Output: None. Limit one request/reply to 4 MiB; sendall handles partial writes.
+
+#### `Read_Exact(connection, size)`
+
+Input: socket and expected byte count. Output: exact bytes; EOFError on truncated stream.
+
+#### `Receive_JSON(connection)`
+
+Input: socket. Read bounded length-framed UTF-8 JSON. Output: dictionary or exception.
+
+### server.py
+
+#### `Atomic_Text(path, text, private=True)`
+
+Input: .txt Path, text and private flag. Write temporary .txt file then replace target.
+Output: None. Protects a single file from partial writes; server handles one request at a time.
+
+#### `Root_Sign(value)`
+
+Input: JSON value. Sign canonical bytes with server audit/storage RSA-PSS/SHA-256 key.
+Output: hex signature str. This server key is separate from sender ElGamal/receiver RSA keys.
+
+#### `Root_Verify(value, signature)`
+
+Input: JSON value and hex signature. Verify against loaded server's root public key.
+Output: bool; altered user roles, catalog or audit snapshots cannot be accepted.
+
+#### `Signed_Save(name, payload)`
+
+Input: fixed server .txt filename and JSON payload. Sign and atomically save. Output: None.
+
+#### `Signed_Read(path)`
+
+Input: signed .txt Path. Verify snapshot signature before use. Output: payload or ValueError.
+
+#### `Audit_Read(path=None)`
+
+Input: optional audit-copy Path. Verify snapshot and every sequence/hash-chain link.
+Output: event list. Alteration/reordering/tail deletion fails unless an old whole signed snapshot is replayed.
+
+#### `Audit(actor, action, details)`
+
+Input: actor, event name and non-secret details. Append timestamped event and sign snapshot.
+Output: None. Never include passwords, session tokens, plaintext or private/AES keys.
+
+#### `Password_Verifier(password, salt)`
+
+Input: password str and salt hex. Run scrypt N=16384,r=8,p=1. Output: hex verifier, never password.
+
+#### `Credential(password, role)`
+
+Input: password >=8 characters and recognized role. Output: salted credential/public-key entry.
+
+#### `Setup(admin_password)`
+
+Input: first admin login password, at least eight characters. First run only.
+Create server signing keys and signed users/catalog/audit .txt files. Output: None.
+The server's private signing key is an owner-only local teaching file; no extra unlock password.
+
+#### `Load_Server()`
+
+Input: none. Load existing server signing key, validate matching public key and signed files.
+Output: None. Accounts and records persist; old login tokens are cleared on restart.
+
+#### `Configure_Logging()`
+
+Input: none. Attach local operational .txt log handler once. Output: None; excludes request bodies.
+
+#### `Login(username, password)`
+
+Input: credentials received from the lab client. Verify signed users DB and scrypt; throttle repeated failures.
+Output: token, role, username; token exists only in server memory and expires after 30 minutes.
+
+#### `Require(token, permission=None)`
+
+Input: opaque token and required permission. Resolve current enabled account and role server-side.
+Output: (username,user). Raise on missing/expired session, disabled account or unauthorized operation.
+
+#### `Manage_User(token, username, password=None, role=None, disable=False)`
+
+Input: admin token and target username; create with password/role or disable=True.
+Output: None. Signed role storage prevents raw edits; disabling invalidates target's sessions.
+
+#### `Register_Key(token, public)`
+
+Input: sender/receiver session and public key only. Bind first key to authenticated identity.
+Output: fingerprint. Existing keys cannot be silently replaced; private values are rejected.
+
+#### `Receiver_Key(token, receiver)`
+
+Input: sender session and receiver username. Output: registered enabled receiver's public RSA PEM.
+
+#### `Catalog(actor)`
+
+Input: actor name. Verify signed manifest that binds IDs, recipients and complete packet digests.
+Output: catalog dict; audit detection/refuse if modified. Never trust folder names alone.
+
+#### `Can_Access(username, user, entry)`
+
+Input: authenticated name/user and catalog entry. Output: bool for record-level visibility.
+
+#### `Get_Entry(token, record_id, permission)`
+
+Input: session, record ID and permission. Enforce role plus record ownership. Output: (actor,entry).
+
+#### `Check_Stored(record_id, entry, folder=None)`
+
+Input: ID, signed catalog entry, optional practice-copy folder. Output: verification dictionary.
+Bind packet digest and metadata to manifest and currently registered public keys; catch corrupt files.
+
+#### `Submit(token, packet)`
+
+Input: sender session and encrypted/public packet. Validate identity, keys, signatures and ID.
+Output: accepted record ID. Store .txt artifacts under a unique ID; no plaintext/private keys received.
+
+#### `List_Records(token)`
+
+Input: authenticated session. Output: visible IDs, metadata summary and integrity status.
+Senders see own records; receivers addressed records; admin/reviewer see all, never plaintext.
+
+#### `Verify_Record(token, record_id)`
+
+Input: authorized session and ID. Output: all public integrity checks; audit any detected tampering.
+
+#### `Download(token, record_id)`
+
+Input: receiver session and addressed ID. Verify before sending encrypted packet and trusted keys.
+Output: packet and registered verification keys. Client must verify again before decrypting locally.
+
+#### `Tamper_Test(token, record_id, target)`
+
+Input: admin session, existing ID, target artifact or 'audit'. Modify only a practice copy.
+Output: expected rejection checks. Never re-sign the changed copy or damage the live original.
+
+#### `Audit_Report(token)`
+
+Input: admin session. Output: verified audit snapshot and last 100 operational log lines.
+Operational logs are diagnostic, not signed; the signed audit is the integrity-protected record.
+
+#### `Dispatch(request)`
+
+Input: decoded JSON request dict. Route to guarded high-level operations. Output: JSON result.
+Never accept a caller-supplied role as authority, arbitrary file path, private key or decryption action.
+
+#### `Server_Start(stop_after=None, ready=None, stop_event=None)`
+
+Input: none for ordinary use. Listen on localhost:5056 and handle TCP requests in a loop.
+Output: None. Optional count/events let verification stop the loop cleanly; not command-line options.
+Read JSON, dispatch to a permission-checked function, reply, close connection. Ctrl+C stops server.
+
+#### `Menu()`
+
+Input: first-run admin password only. Create/load server state and start listening immediately.
+Output: None. No certificate setup or separate operator login; Ctrl+C stops the server.
+
+### client.py
+
+#### `Client(action, args=None, token=None)`
+
+Input: operation name, argument dict and optional login token.
+Open a normal TCP connection, send JSON request, read JSON reply. Output: result or ValueError.
+Use Client('list', token=session['token']). The same framing works for every menu operation.
+
+#### `User_Folder(username)`
+
+Input: authenticated username. Validate safe directory name. Output: per-user local Path.
+
+#### `Validate_ID(record_id)`
+
+Input: record ID str. Restrict it to 1..64 letters/digits/underscore/hyphen. Output: same ID.
+
+#### `Ensure_Local_Keys(session)`
+
+Input: logged-in session dict. Generate sender ElGamal or receiver RSA pair on first use.
+Output: public key or None for noncrypto roles. Bind registration to logged-in user, never upload private.
+Registered identities with missing/mismatched local keys are refused instead of silently replaced.
+
+#### `Pin_Public(session, username, kind, public)`
+
+Input: session, other username, sender/receiver kind, registered public key from the lab server.
+Output: public key. Save .txt trust copy on first use; reject later unexpected fingerprint changes.
+Initial registry trust depends on the authenticated server and account-registration process.
+
+#### `Send_Message(session, receiver, record_id, plaintext)`
+
+Input: sender session, receiver username, unique ID and plaintext str.
+Output: acceptance response. Encrypt/hash/sign locally, save .txt artifacts, upload only public package.
+Saved sender symmetric key is private practice material, never sent to server/receiver/reviewer.
+
+#### `Receive_Message(session, record_id)`
+
+Input: receiver session and addressed record ID. Download, pin/check identities, verify locally.
+Output: plaintext str only after local RSA unwrap and GCM authentication. Server never sees this text.
+Save encrypted artifacts only; neither recovered plaintext nor recovered AES key is saved.
+
+#### `Manage_Users(session)`
+
+Input: admin session and submenu prompts. Create/disable/list accounts through guarded server API.
+Output: printed status. This small submenu keeps the main admin menu to three actions.
+
+#### `Role_Menu(session)`
+
+Input: authenticated session. Dispatch compact sender/reviewer/receiver/admin menu.
+Output: None. Server independently checks every permission; menu choice does not grant authority.
+
+#### `Client_Start()`
+
+Input: none. Start interactive client by calling Menu. Output: None; no special run flags.
+
+#### `Menu()`
+
+Input: login choices and hidden credentials. Login, auto-setup local keys, open role menu.
+Output: None. Logins/passwords/tokens are not written to client files or operational logs.
+

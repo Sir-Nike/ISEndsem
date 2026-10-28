@@ -1,0 +1,206 @@
+# Lab 4 Q2: Rabin hospital key-management service
+
+## What the manual asks
+
+Configurable Rabin keys per facility, secure key distribution, revocation, annual renewal, protected private storage, audit logs and comparison with RSA.
+
+## Start here: the idea in plain English
+
+Each facility receives a public modulus and an access token. Private primes are encrypted under a local AES-GCM master key. The request_keys function checks the token, active status and expiry before releasing the facility key pair. Patient data uses AES-GCM; Rabin wraps the AES key with a marker/checksum to identify the correct square root. Renewal checks run on startup and on demand. All key operations are logged. Choose Add facility, keep the printed token, then choose Request keys.
+
+## How to run
+
+From this question folder, run:
+
+```bash
+../../../.venv/bin/python solution.py
+```
+
+The program is interactive. If you installed dependencies into another environment, use that environment's Python instead. Read `Labs/README.md` for setup. Paths above assume the environment is in the project root, beside `Labs`.
+
+Press 1 to run an exercise, enter your values or press Enter for the displayed default, and press 0 to exit. Input conversion and validation errors are printed without terminating the interactive menu. Each function can also be imported and called separately.
+
+## Step-by-step solution
+
+1. Start the program and select Run. Read the displayed default inputs before changing them.
+2. Follow the input prompts. Text is encoded to bytes when required; numeric inputs are checked before cryptographic operations.
+3. Read the `exercise()` function below: it connects the functions in the order needed for this question.
+4. Compare the printed output with the expected result, and repeat using a different input.
+
+```python
+def exercise():
+    """Input: facility/key-management menu choices. Manage Rabin keys and patient encryption.
+    Output: persisted encrypted keys, patient envelopes, authorized recovery and audit log.
+    """
+    folder = Path(__file__).resolve().parent / "storage"
+    registry, master = load_store(folder)
+    renewed = renew_due(registry, master)
+    if renewed:
+        save_store(folder, registry, "automatically renewed " + str(renewed))
+    while True:
+        print("\n1 Add facility  2 List public keys  3 Request keys/decrypt patient demo")
+        print("4 Revoke  5 Renew expired keys  6 Compare Rabin/RSA  0 Back")
+        choice = input("Operation: ").strip()
+        if choice == "0":
+            return
+        try:
+            if choice == "1":
+                name = ask_text("Facility", "Hospital_A")
+                bits = ask_int("Modulus bits", 1024, 256, 4096)
+                token = issue_facility(registry, name, bits, master)
+                save_store(folder, registry, "issued " + name)
+                print("Save this facility access token:", token)
+            elif choice == "2":
+                for name, record in registry.items():
+                    print(
+                        name,
+                        "public n:",
+                        record["n"],
+                        "active:",
+                        record["active"],
+                        "expiry:",
+                        record["expires"],
+                    )
+            elif choice == "3":
+                name = ask_text("Facility", "Hospital_A")
+                token = ask_text("Facility token", "enter-issued-token")
+                n, private = request_keys(registry, name, token, master)
+                text = ask_text("Patient record", "Patient 101: follow-up required")
+                session = get_random_bytes(16)
+                encrypted = seal(text.encode(), session)
+                wrapped = rabin_wrap_key(n, session)
+                recovered = open_seal(encrypted, rabin_unwrap_key(private, wrapped))
+                print(
+                    "Wrapped AES key:",
+                    wrapped,
+                    "Encrypted patient:",
+                    encrypted,
+                    "Recovered:",
+                    recovered.decode(),
+                )
+                save_store(folder, registry, "authorized key request " + name)
+            elif choice == "4":
+                name = ask_text("Facility", "Hospital_A")
+                registry[name]["active"] = False
+                save_store(folder, registry, "revoked " + name)
+            elif choice == "5":
+                names = renew_due(registry, master)
+                save_store(folder, registry, "renewal check " + str(names))
+                print("Renewed:", names)
+            elif choice == "6":
+                start = time.perf_counter()
+                n, private = rabin_keys(1024)
+                rabin_time = time.perf_counter() - start
+                start = time.perf_counter()
+                rsa = RSA.generate(2048)
+                rsa_time = time.perf_counter() - start
+                message = 42
+                c = rabin_encrypt(n, message)
+                print("Rabin-1024 keygen s:", rabin_time, "RSA-2048 keygen s:", rsa_time)
+                print(
+                    "Rabin four roots:",
+                    rabin_roots(private, c),
+                    "original included:",
+                    message in rabin_roots(private, c),
+                )
+                print(
+                    "Rabin needs root disambiguation; RSA-OAEP has standardized message encoding. These sizes are not equal-security claims."
+                )
+            else:
+                print("Invalid choice.")
+        except (ValueError, KeyError, OSError) as error:
+            print("Rejected:", error)
+            save_store(folder, registry, "rejected operation " + choice)
+```
+
+Follow the calls in `exercise()` from top to bottom. It obtains the inputs, calls the small functions that do the work, and prints intermediate values and the final result. Bytes are shown as hexadecimal when ordinary text would be unreadable. A successful round trip prints a recovered message equal to the input; verification examples also show a changed message being rejected where applicable.
+
+## Every function explained
+
+### `ask_text(label, default)`
+
+Input: a prompt and default string. Read text, or use the default when Enter is pressed.
+Output: a string. Use ask_text('Message', 'hello') to let the user choose a message.
+
+### `ask_int(label, default, minimum, maximum)`
+
+Input: prompt, default integer, optional inclusive limits. Read and validate a number.
+Output: an integer; raise ValueError on bad input. Use for keys, counts, or amounts.
+
+### `seal(data, key)`
+
+Input: plaintext bytes and AES key. Encrypt and authenticate using AES-GCM.
+Output: dictionary containing nonce, tag and ciphertext as hex strings for JSON storage.
+
+### `open_seal(record, key)`
+
+Input: GCM record and matching AES key. Verify the tag while decrypting.
+Output: plaintext bytes. Wrong keys or modified data raise ValueError.
+
+### `rabin_keys(bits)`
+
+Input: desired modulus size. Generate distinct primes congruent to 3 modulo 4.
+Output: public modulus n and private pair (p,q). Used by Rabin encryption/decryption.
+
+### `rabin_encrypt(n, message)`
+
+Input: public modulus and integer in 0..n-1. Square the message modulo n.
+Output: ciphertext integer. Different messages can have the same square.
+
+### `rabin_roots(private, ciphertext)`
+
+Input: (p,q) and Rabin ciphertext. Compute square roots and combine with CRT.
+Output: list of up to four integer roots. Extra message redundancy chooses the original.
+
+### `rabin_wrap_key(n, key)`
+
+Input: Rabin modulus and 16-byte AES key. Add marker and checksum to disambiguate roots.
+Output: ciphertext integer. This illustrative encoding is not a standardized padding scheme.
+
+### `rabin_unwrap_key(private, ciphertext)`
+
+Input: Rabin private primes and wrapped key integer. Test roots for marker/checksum.
+Output: exactly one 16-byte AES key, or ValueError when the ciphertext is invalid.
+
+### `load_store(folder)`
+
+Input: storage directory. Load registry plus local AES master key, or initialize them.
+Output: (registry, master key). Secret material is kept in owner-only files.
+
+### `save_store(folder, registry, event)`
+
+Input: directory, registry and event text. Save registry and append timestamped audit log.
+Output: registry.json and audit.jsonl files. Called after every key/access mutation.
+
+### `issue_facility(registry, name, bits, master, lifetime)`
+
+Input: registry, new facility name, bit size, master key and lifetime seconds.
+Output: one-time access token; store public key, encrypted private primes and token hash.
+
+### `request_keys(registry, name, token, master, now)`
+
+Input: facility name, access token, registry and master key. Check identity/status/expiry.
+Output: authorized (n,(p,q)) pair. This function is the local key-distribution API.
+
+### `renew_due(registry, master, now)`
+
+Input: registry, master key and optional time. Renew expired active facility keys.
+Output: list of renewed names. Retain facility tokens; replace public/private key material.
+
+### `exercise()`
+
+Input: facility/key-management menu choices. Manage Rabin keys and patient encryption.
+Output: persisted encrypted keys, patient envelopes, authorized recovery and audit log.
+
+### `main()`
+
+Input: terminal choices. Run the exercise safely.
+Output: printed results. Use python solution.py and choose a menu option.
+
+## What to change during an exam
+
+Change values through the prompts first. For a different scenario, replace the example messages or record fields in `exercise()`, and keep the cryptographic functions. Match the requested algorithm, key size, mode, and hash exactly. Store IVs/nonces alongside ciphertext when needed. Keep private keys private. Hashing cannot be decrypted; encryption can. A hash by itself does not prove who sent a message.
+
+## Notes and limitations
+
+The API is a local Python function; there is no web server or claim of HIPAA compliance. Annual renewal occurs when the program runs, not while it is closed. Regenerating keys does not migrate old ciphertext: keep archived decryption keys in a production migration design. The local OS user is the service administrator. File permissions and an encrypted private-key field are teaching controls, not a full enterprise secret store. The Rabin wrapping format is illustrative, not standardized secure padding.

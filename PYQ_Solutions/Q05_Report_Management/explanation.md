@@ -1,0 +1,376 @@
+# Q5: Expiring-key report management with HMAC search and audit
+
+## 1. The original question
+
+report - management - record
+store the report id , department , description
+- encode the description with sha 256
+- use kdf (10 rounds) , use 24 bytes for AES 192 CBC encrypt the report_id, department (make the key valid only for 120 seconds and show the expiry of the key too , shouldnt be able to use the same key once expired)
+- use RSA 2048 , PKCS V1 vs 1.5 and SHA 256 to sign it and display the signature
+- make it indexable (HMAC) and also searchable based on the description key words
+- no bulk decryption once searched the keyword
+- make it role based - staff , admin
+- staff had certain functions like add the record, encrypt , etc
+- admin could see the records
+- you need to show a audit record once the keys are tampered with , if tampered with it should show false when trying to verify signature
+- no internal department change too should be recorded
+- store data in json
+
+## 2. What you are building, in plain English
+
+Staff derives an AES-192 key with the specified 10-round KDF, encrypts report ID/department, hashes the description, creates keyword HMAC tokens and signs the stored record. Admin searches without decryption and can decrypt only a chosen verified record while its key remains within the original 120-second lifetime.
+
+This solution is intentionally split into small functions. Read the menu first to understand what the user can do, then follow the function calls. Every function has an input/operation/output/usage comment in the Python source and is explained again below.
+
+## 3. Basic vocabulary before reading the code
+
+| Term | Meaning in these programs | What you should say in a viva |
+|---|---|---|
+| Plaintext | Original message or record bytes | Encryption starts from plaintext. |
+| Ciphertext | Encrypted bytes or encrypted integer | You need the correct key to recover the original value. |
+| AES key | Secret 16/24/32 bytes | AES-192 means 24 bytes, AES-256 means 32; block size remains 16 bytes. |
+| IV / nonce | Per-encryption parameter stored with ciphertext | It is not the secret key; use a fresh value with each encryption. |
+| SHA/MD5 digest | Fixed-size fingerprint of exact bytes | Hashing is one-way, so it cannot be decrypted. |
+| Signature | Private-key proof over a hash | Sign with private key; verify with the trusted public key. |
+| HMAC token | Deterministic keyed lookup value | The same normalized keyword gives the same token for indexing. |
+| Paillier aggregate | Product of ciphertexts modulo n squared | It decrypts to a sum of plaintext numbers modulo n. |
+| Canonical JSON | Sorted keys and stable separators encoded as UTF-8 | Sender and verifier hash exactly the same representation. |
+| Expiry | Persisted issue time plus lifetime | Restarting must not give an old key another lifetime. |
+
+
+## 4. Install and run
+
+The only third-party Python package is PyCryptodome. From the **project root**, where Labs and PYQ_Solutions live:
+
+```bash
+python3 -m venv .venv
+.venv/bin/python -m pip install -r PYQ_Solutions/requirements.txt
+.venv/bin/python PYQ_Solutions/Q05_Report_Management/solution.py
+```
+
+Your existing `.venv` already has this package in the current workspace. On Windows use `.venv\Scripts\python.exe` instead. If your terminal is inside this question folder, run `../../.venv/bin/python solution.py`. Enter normal menu choices; there is no special command-line run mode. When a default appears in square brackets, Enter accepts it. Q1 deliberately requires its exam parameters without numeric defaults.
+
+First-run account passwords are hidden while typing in a normal terminal. Remember the passwords you set: the programs do not install default shared passwords. The KDF password used for a report or voter credential is distinct from a role login password.
+
+## 5. A complete worked run
+
+Create staff/admin passwords on first launch. Login as staff, add R001 / Oncology / Monthly cancer screening report, and enter any nonempty KDF password. Write down the opaque locator printed by the program. The program shows description SHA-256, full RSA signature, issue time and expiry exactly 120 seconds later. Quickly logout and login as admin. Search screening: matching locator only, with no decryption. Use View one and that locator: ID and department appear. Change department to Research with a reason; view audit to see both old/new departments. After 120 seconds, View one refuses even after restarting. Signature verification may still be True: authenticity and key validity are separate checks. For tampering practice, add a fresh record and choose Simulate key tampering, confirm TAMPER, then verify: key_integrity and overall become False and a signed tampering_detected event is recorded. Ciphertext tampering instead makes the RSA signature False.
+
+## 6. The algorithm, step by step
+
+1. Create a fresh random salt and derive exactly 24 bytes using PBKDF2-HMAC-SHA256, count=10.
+2. Set issued_at=now and expires_at=now+120 once; persist them.
+3. SHA-256 hash the description (do not call this reversible encoding).
+4. CBC-encrypt canonical report ID/department with a fresh 16-byte IV.
+5. HMAC-normalize each description keyword into an inverted index token.
+6. Sign encrypted fields, description hash, expiry, key ID, salt and key commitment with RSA-2048/PKCS#1 v1.5/SHA-256.
+7. Search returns opaque locators; verify signed keyword membership and decrypt no records.
+8. Admin selects one locator; verify RSA, key commitment/metadata and expiry before CBC decryption.
+9. Audit legitimate department changes and rejected/tampered operations in a signed hash chain.
+
+Cryptographic ciphertexts, IVs, salts, nonces and signatures can vary between runs because encryption and key generation use randomness. Compare the recovered plaintext, verification booleans, search results and totals instead of expecting a fixed long ciphertext string. Q1 uses raw deterministic RSA, so its fixed worked example does reproduce the same small ciphertext integers.
+
+## 7. What is saved and why
+
+storage/reports.json contains signed encrypted records plus HMAC inverted index. record_keys.json stores per-report expiring AES keys with owner-only permissions. system_keys.json contains RSA identity and HMAC index key. accounts.json contains salted password hashes. audit.jsonl records signed events, including department changes and key/ciphertext tampering.
+
+All generated state is written beside the script under the documented subfolders. Changing your terminal's current directory does not redirect the records. Reopening loads the previous keys and data. Keep the key files with the encrypted data; deleting keys does not decrypt or reset existing records. To start a completely separate practice run, copy the question folder to a new location before generating data.
+
+## 8. Every Python function explained
+
+Read functions in their file order. Inputs named `public` hold shareable encryption/verification parameters; `private`, `keys`, `record_keys` or `credentials` may contain secrets and must not be sent with an untrusted request.
+
+### File: `solution.py`
+
+#### `ask_text(label, default=None)`
+
+Input: prompt and optional default. Read terminal text; Enter accepts a supplied default.
+
+Output: nonempty string. Use ask_text('Patient ID') when a value must be entered.
+
+Follow these calls when reading the implementation: `ValueError`, `input`.
+
+#### `canonical(record)`
+
+Input: JSON-compatible record. Sort keys and remove irrelevant spaces consistently.
+
+Output: UTF-8 bytes. Hash/sign these exact bytes so dictionary formatting cannot change results.
+
+#### `read_json(path, default=None)`
+
+Input: JSON file path and optional missing-file default. Parse saved records.
+
+Output: decoded JSON. Invalid JSON raises an error instead of silently replacing damaged data.
+
+Follow these calls when reading the implementation: `Path`.
+
+#### `save_json(path, record, secret=False)`
+
+Input: path, record and secret-file flag. Write via a temporary file then replace atomically.
+
+Output: saved JSON file; returns nothing. Secret files receive owner-only permissions.
+
+Follow these calls when reading the implementation: `Path`.
+
+#### `display_time(timestamp)`
+
+Input: Unix seconds. Format an explicit date/time in Asia/Kolkata.
+
+Output: readable timestamp string. Use for key expiry, voting windows and audit displays.
+
+Follow these calls when reading the implementation: `ZoneInfo`.
+
+#### `cbc_encrypt(data, key)`
+
+Input: plaintext bytes and AES key. Generate a fresh IV, PKCS#7-pad and CBC-encrypt.
+
+Output: hex IV/ciphertext dictionary. Sign the envelope separately to detect modification.
+
+Follow these calls when reading the implementation: `pad`.
+
+#### `cbc_decrypt(envelope, key)`
+
+Input: authenticated CBC envelope and original AES key. Decrypt and remove padding.
+
+Output: plaintext bytes. Call only after verifying the enclosing signature/integrity checks.
+
+Follow these calls when reading the implementation: `unpad`.
+
+#### `rsa_sign(private_pem, data, algorithm='sha256')`
+
+Input: RSA private PEM, bytes to sign and sha256/md5/sha512 selection. Hash once and sign.
+
+Output: PKCS#1 v1.5 signature as hex. Private keys remain local; public keys verify.
+
+#### `rsa_verify(public_pem, data, signature, algorithm='sha256')`
+
+Input: trusted RSA public PEM, original bytes, signature hex and hash selection.
+
+Output: True if the signature matches; False for altered data, key or signature encoding.
+
+#### `rsa_pair(bits=2048)`
+
+Input: RSA modulus bits. Ask PyCryptodome to generate a fresh key pair.
+
+Output: dictionary of private/public PEM strings. Save the private part in a secret file.
+
+#### `normalize_words(text)`
+
+Input: description/query text. Normalize case and extract alphanumeric keywords.
+
+Output: sorted unique word list. Use identical normalization while indexing and searching.
+
+#### `token(key, text)`
+
+Input: secret HMAC key and already normalized lookup string. Compute deterministic keyed hash.
+
+Output: hex lookup token. A search computes the same token without bulk decryption.
+
+#### `setup_accounts(path, roles)`
+
+Input: account file path and role names. On first use ask for each role's new password twice.
+
+Output: saved salted PBKDF2 password records. Existing passwords are never silently replaced.
+
+Follow these calls when reading the implementation: `read_json`, `save_json`, `get_random_bytes`, `PBKDF2`, `ValueError`.
+
+#### `authenticate(accounts, username, password)`
+
+Input: saved accounts, username and entered password. Derive and compare the salted password hash.
+
+Output: role string on success; ValueError on unknown account or wrong password.
+
+Follow these calls when reading the implementation: `PBKDF2`, `ValueError`.
+
+#### `login(accounts)`
+
+Input: username and hidden password from the terminal. Authenticate a previously created account.
+
+Output: username and assigned role; callers use that role to choose the allowed menu.
+
+Follow these calls when reading the implementation: `ask_text`, `authenticate`.
+
+#### `require_role(actual, allowed)`
+
+Input: authenticated role and allowed-role collection. Check permission inside the operation itself.
+
+Output: nothing on success; PermissionError on denial. Menus alone are not authorization checks.
+
+Follow these calls when reading the implementation: `PermissionError`.
+
+#### `audit(folder, event, details, private_pem)`
+
+Input: audit directory, event name, details and signing key. Chain and sign a new audit entry.
+
+Output: appended JSONL event. The previous-entry digest exposes edits, reordering and gaps.
+
+Follow these calls when reading the implementation: `rsa_sign`, `Path`, `canonical`.
+
+#### `verify_audit(folder, public_pem)`
+
+Input: audit directory and trusted signing public key. Verify signatures and previous-entry chain.
+
+Output: True when existing entries are intact. External anchoring is needed to detect deletion of the final suffix.
+
+Follow these calls when reading the implementation: `Path`, `rsa_verify`, `canonical`.
+
+#### `initialize_reports(folder)`
+
+Input: storage folder. Load/create RSA-2048 identity, HMAC index key and report/key registries.
+
+Output: keys, encrypted reports and per-record expiring keys. Persisted expiry never resets on restart.
+
+Follow these calls when reading the implementation: `read_json`, `save_json`, `rsa_pair`, `get_random_bytes`.
+
+#### `derive_report_key(password, salt)`
+
+Input: entered key password and random salt bytes. Run PBKDF2-HMAC-SHA256 for exactly 10 iterations.
+
+Output: 24-byte AES-192 key. Ten iterations matches this exam prompt, not a real password-hardening recommendation.
+
+Follow these calls when reading the implementation: `PBKDF2`, `ValueError`.
+
+#### `report_payload(record)`
+
+Input: saved report. Remove signature field before canonical hashing/signing.
+
+Output: all authenticated fields, including encrypted ID/department, expiry and key commitment.
+
+#### `verify_report(record, record_keys, keys)`
+
+Input: report, current per-record key store and trusted RSA identity. Check signature and signed key binding.
+
+Output: details with rsa_signature, key_integrity and overall booleans. Key tampering makes overall False.
+
+Follow these calls when reading the implementation: `rsa_verify`, `canonical`, `report_payload`.
+
+#### `active_key(record, record_keys, keys, now=None)`
+
+Input: report, key store, system identity and optional time. Verify key binding and 120-second validity.
+
+Output: AES key bytes only if verified and unexpired. Every encrypt/decrypt path must enforce this check.
+
+Follow these calls when reading the implementation: `verify_report`, `ValueError`.
+
+#### `add_report(registry, record_keys, keys, role, username, report_id, department, description, password, now=None)`
+
+Input: staff role, report fields and derivation password. Hash description and CBC-encrypt ID/department.
+
+Output: signed report inserted into registry and 120-second key entry. Description plaintext is not saved.
+
+Follow these calls when reading the implementation: `require_role`, `token`, `get_random_bytes`, `derive_report_key`, `cbc_encrypt`, `rsa_sign`, `ValueError`, `canonical`, `normalize_words`.
+
+#### `search_reports(registry, keys, role, query)`
+
+Input: admin role and one description keyword. Match its HMAC token in the inverted index.
+
+Output: opaque report locators only; no report field decryption occurs during search.
+
+Follow these calls when reading the implementation: `require_role`, `normalize_words`, `token`, `ValueError`, `rsa_verify`, `canonical`, `report_payload`.
+
+#### `view_report(registry, record_keys, keys, role, locator, now=None)`
+
+Input: admin role, one report locator and current time. Verify signature/key/expiry, then decrypt one report.
+
+Output: report ID, department and description hash. Expired keys are rejected even after restart.
+
+Follow these calls when reading the implementation: `require_role`, `active_key`, `display_time`, `cbc_decrypt`.
+
+#### `change_department(registry, record_keys, keys, role, locator, new_department, reason, folder, username)`
+
+Input: admin session, record, new department and required reason. Verify current active key and old fields.
+
+Output: newly encrypted/signed report plus signed audit event containing before/after departments.
+
+Follow these calls when reading the implementation: `require_role`, `active_key`, `cbc_encrypt`, `rsa_sign`, `audit`, `ValueError`, `cbc_decrypt`, `canonical`, `report_payload`.
+
+#### `persist_reports(folder, registry, record_keys)`
+
+Input: folder, reports and expiring key entries. Save data and secret keys separately.
+
+Output: reports.json and owner-only record_keys.json. Never alter the original issue/expiry times.
+
+Follow these calls when reading the implementation: `save_json`.
+
+#### `verify_and_audit(folder, record, record_keys, keys, username)`
+
+Input: selected report and current key material. Verify and append a signed result/tamper audit event.
+
+Output: detailed check booleans. Changed keys yield overall False even if record bytes are unchanged.
+
+Follow these calls when reading the implementation: `verify_report`, `audit`.
+
+#### `role_menu(folder, keys, registry, record_keys, username, role)`
+
+Input: authenticated staff/admin session. Enforce role permissions and report/key expiry on operations.
+
+Output: encrypted reports, selected results, signature checks, expiry displays and audit records.
+
+Follow these calls when reading the implementation: `ask_text`, `add_report`, `persist_reports`, `audit`, `display_time`, `PermissionError`, `verify_and_audit`, `search_reports`, `ValueError`, `view_report`, `change_department`, `verify_audit`.
+
+#### `main()`
+
+Input: first-run staff/admin passwords, login credentials and operation choices.
+
+Output: persistent role-based report application with 120-second keys and signed tamper/change auditing.
+
+Follow these calls when reading the implementation: `initialize_reports`, `setup_accounts`, `ask_text`, `login`, `role_menu`, `audit`, `Path`.
+
+## 9. How to read the menu code
+
+`solution.py` begins here when you run it:
+
+```python
+def main():
+    """Input: first-run staff/admin passwords, login credentials and operation choices.
+    Output: persistent role-based report application with 120-second keys and signed tamper/change auditing.
+    """
+    folder = Path(__file__).resolve().parent / "storage"
+    keys, registry, record_keys = initialize_reports(folder)
+    accounts = setup_accounts(folder / "accounts.json", ("staff", "admin"))
+    while True:
+        print("\n1 Login  0 Exit")
+        try:
+            choice = ask_text("Choice")
+            if choice == "0":
+                return
+            if choice == "1":
+                # Reload records and keys on each login so manual key-file tampering is detected.
+                keys, registry, record_keys = initialize_reports(folder)
+                username, role = login(accounts)
+                role_menu(folder, keys, registry, record_keys, username, role)
+            else:
+                print("Choose 1 or 0.")
+        except (ValueError, PermissionError, OSError) as error:
+            print("Rejected:", error)
+            audit(folder, "login_rejected", {"reason": str(error)}, keys["rsa"]["private"])
+```
+
+The `if __name__ == "__main__": main()` line at the bottom starts the menu when the file is run directly. Importing the file to reuse its functions does not automatically start the menu. A `try/except` around each operation turns ordinary bad input into a readable error so you can return to the menu.
+
+## 10. Python details that matter here
+
+- `text.encode()` converts Python text into bytes. Cryptographic libraries operate on bytes, not Python strings.
+- `bytes.fromhex(text)` restores bytes from a printed hexadecimal string; `.hex()` does the reverse.
+- A dictionary such as `record['signature']` keeps named fields together without defining a class.
+- `pow(a, e, n)` computes modular exponentiation efficiently; `pow(a, -1, n)` computes a modular inverse when one exists.
+- `canonical(record)` is used before hashing/signing. Never hash an ordinary dictionary representation or rely on key insertion order.
+- A verifier must check the signature with a **previously trusted** public key. A key supplied by an unknown sender does not prove identity.
+- Menu code gathers inputs. Separate functions do cryptography, indexing, authorization and storage so you can adapt the question without rewriting everything.
+- Cryptographic API calls such as `AES.new(...)` return library cipher objects. You do not define classes or use object-oriented application design in these solutions.
+
+## 11. Verification, failures and exam modifications
+
+- First perform the successful worked run, then repeat with different input values.
+- Try a missing record ID, an unlisted menu choice, the wrong role, an incorrect password, or a changed ciphertext/signature where applicable. The operation should fail rather than print an apparently valid result.
+- Always verify before exposing selected plaintext. Do not continue decryption after a failed integrity check.
+- Search must use an index; do not decrypt every record to test whether a keyword occurs.
+- For homomorphic totals, aggregation receives the public key and ciphertexts. Keep private-key decryption at the final result step.
+- Match the question's exact key length, hash and cipher mode. AES-192-CBC is not interchangeable with AES-256-GCM when the question specifically requests CBC.
+- If the examiner changes field names or the application story, adapt the input/record dictionaries and menus. Keep the canonical serialization, key handling, verification order and mathematical functions.
+- If you edit data legitimately, encrypt/sign the new state through the authorized function. Editing JSON directly is a tampering test, not an authorized update.
+
+## 12. Assumptions, corrections and practical limits
+
+PBKDF2 with 10 iterations intentionally follows the question and is far too weak for a new password-storage design; login passwords separately use 200000 iterations. Stored descriptions are SHA-256 digests and HMAC keyword tokens, not plaintext; you cannot recover full descriptions from hashes. A changed external AES key does not mathematically invalidate an unchanged RSA signature; the signed key commitment detects it. The program prints rsa_signature and key_integrity separately, then overall=False and audits the failure. Expired keys are refused rather than silently renewed or reused. Searching/hashing/signature checks do not require using an expired AES key. System time is trusted; true OS clock rollback resistance is outside a local script. The phrase about department changes is interpreted as requiring legitimate changes to be audited and unauthorized edits to fail verification.
+

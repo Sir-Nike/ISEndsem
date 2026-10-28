@@ -1,0 +1,859 @@
+# Q4: Encrypted e-voting with client/server and threshold tally
+
+## 1. The original question
+
+A national e-voting system has been deployed to allow citizens to cast their votes securely from remote locations. The system ensures privacy, verifiability, integrity, and non-repudiation while allowing aggregate computations without revealing individual votes.
+
+1. On the Client Side
+A voter fills out an electronic ballot that records their candidate selection and constituency ID.
+Before submission, the voter's device generates a SHA-512 hash of the ballot file to ensure data integrity.
+The ballot is then encrypted using AES-256 in CBC mode for confidentiality.
+The AES key is encrypted with the Election Commission's RSA-4096 public key.
+To ensure authenticity and non-repudiation, the voter's system digitally signs the SHA-512 hash using their ElGamal digital signature.
+The voter's choice (numerical candidate ID) is homomorphically encrypted using the Paillier encryption scheme, allowing the Election Commission to tally votes without decrypting individual ballots.
+A timestamp from a trusted authority is added to record the exact submission time and ensure votes are cast before the deadline.
+
+2. On the Server Side
+The system decrypts the AES session key using its RSA private key but keeps the homomorphically encrypted vote values in their encrypted form.
+It verifies the digital signature using the voter's public key and compares the SHA-512 hash to detect any tampering.
+The timestamp is checked to confirm that the vote was cast within the valid voting period.
+The homomorphic tallying algorithm is applied to aggregate the encrypted votes and compute total counts without decrypting any individual vote.
+For audit and search purposes, the server maintains a searchable encryption index to locate ballots from specific constituencies or time ranges without revealing vote content.
+At the end of the election, only the final aggregated ciphertext is decrypted using a threshold decryption scheme, ensuring that no single authority can view votes independently.
+
+3. Programming Task
+Write a menu-driven Python program that implements the above functionalities.
+
+Ensure that the system supports role-based access control and the appropriate use of cryptographic techniques for confidentiality, integrity, and authenticity.
+
+Use any data structures (e.g., databases, files or arrays) to securely store encrypted, signed and hashed data.
+
+Show outputs for all the functions specified in the question.
+
+## 2. What you are building, in plain English
+
+A voter encrypts both the numeric candidate ID and a one-hot vote vector with Paillier, hashes/signs that encrypted-choice ballot, encrypts the complete ballot using AES-256-CBC, wraps its key with RSA-4096 and obtains a signed server-side timestamp. The server verifies without decrypting individual choices. After closing, at least two trustees partially decrypt each final candidate total.
+
+This solution is intentionally split into small functions. Read the menu first to understand what the user can do, then follow the function calls. Every function has an input/operation/output/usage comment in the Python source and is explained again below.
+
+## 3. Basic vocabulary before reading the code
+
+| Term | Meaning in these programs | What you should say in a viva |
+|---|---|---|
+| Plaintext | Original message or record bytes | Encryption starts from plaintext. |
+| Ciphertext | Encrypted bytes or encrypted integer | You need the correct key to recover the original value. |
+| AES key | Secret 16/24/32 bytes | AES-192 means 24 bytes, AES-256 means 32; block size remains 16 bytes. |
+| IV / nonce | Per-encryption parameter stored with ciphertext | It is not the secret key; use a fresh value with each encryption. |
+| SHA/MD5 digest | Fixed-size fingerprint of exact bytes | Hashing is one-way, so it cannot be decrypted. |
+| Signature | Private-key proof over a hash | Sign with private key; verify with the trusted public key. |
+| HMAC token | Deterministic keyed lookup value | The same normalized keyword gives the same token for indexing. |
+| Paillier aggregate | Product of ciphertexts modulo n squared | It decrypts to a sum of plaintext numbers modulo n. |
+| Canonical JSON | Sorted keys and stable separators encoded as UTF-8 | Sender and verifier hash exactly the same representation. |
+| Expiry | Persisted issue time plus lifetime | Restarting must not give an old key another lifetime. |
+
+
+## 4. Install and run
+
+The only third-party Python package is PyCryptodome. From the **project root**, where Labs and PYQ_Solutions live:
+
+```bash
+python3 -m venv .venv
+.venv/bin/python -m pip install -r PYQ_Solutions/requirements.txt
+.venv/bin/python PYQ_Solutions/Q04_E_Voting/solution.py
+```
+
+Your existing `.venv` already has this package in the current workspace. On Windows use `.venv\Scripts\python.exe` instead. If your terminal is inside this question folder, run `../../.venv/bin/python solution.py`. Enter normal menu choices; there is no special command-line run mode. When a default appears in square brackets, Enter accepts it. Q1 deliberately requires its exam parameters without numeric defaults.
+
+First-run account passwords are hidden while typing in a normal terminal. Remember the passwords you set: the programs do not install default shared passwords. The KDF password used for a report or voter credential is distinct from a role login password.
+
+For Q4, use separate terminals for the server and client:
+
+```bash
+../../.venv/bin/python server.py
+../../.venv/bin/python client.py
+../../.venv/bin/python trustee.py
+```
+
+Run the server first, register voters, and select its Listen option before using the client. The trustee utility is used only after the server closes voting and exports a signed final request. `solution.py` is just a menu that can launch each of these entry points; opening separate terminals still matters. Keep `crypto_helpers.py` beside the other files.
+
+## 5. A complete worked run
+
+Use three terminal roles, all from this folder. Terminal 1: run server.py, accept a 60-minute first-run window, and set admin/auditor passwords. Login admin. Register voters V001 and V002 with separate credential passwords. Their protected files appear under storage/voter_credentials. Admin selects Listen, localhost port 6044, and 4 connections (two requests per voter). Terminal 2: run client.py, choose Cast, accept public config path, enter V001 credential path/password, choose candidate 2, constituency C01, localhost/6044. Repeat for V002 selecting candidate 1. After four requests the server returns to its menu. Search C01: two opaque ballot IDs. Close voting with CLOSE and Export tally request. Terminal 3: run trustee.py using public_config.json, tally_request.json and trustee_setup/trustee_1.json to create partials/trustee_1.json. Run it again using trustee_2.json to create a different response. On server choose Combine and enter both partial-response paths. Expected counts: candidate 1 = 1, candidate 2 = 1, candidate 3 = 0. One response alone, duplicate responses, changed partials and old-request responses must fail. Deliver private share files to separate custodians in an actual multi-machine demonstration; the server needs only public parameters after setup.
+
+### Terminal-by-terminal checklist
+
+**Terminal 1 — election admin**
+
+1. Run server.py. First run: accept 60 minutes and create admin/auditor passwords.
+2. Login as admin. Choose Register voter twice, creating V001 and V002 and protecting each credential with its own password.
+3. Choose Listen. Host = 127.0.0.1, port = 6044, connections = 4. Leave this terminal waiting.
+
+**Terminal 2 — voters**
+
+1. Run client.py. Choose Cast encrypted vote.
+2. Accept the public-config path. Credential path = storage/voter_credentials/V001.json (or its absolute path). Enter V001's credential password.
+3. Choose candidate 2 and constituency C01. Accept host/port.
+4. Cast again as V002 using its credential/password, candidate 1 and constituency C01. Both votes together make four server requests.
+
+**Terminal 1 — close and export**
+
+1. The listening operation returns after the four requests.
+2. Search C01 to see two ballot IDs. Choose Close and type CLOSE.
+3. Choose Export tally request. Keep the printed tally_request.json path.
+
+**Terminal 3 — independent trustees**
+
+1. Run trustee.py. Accept public config and signed request paths.
+2. Use storage/trustee_setup/trustee_1.json as the one secret share; save partials/trustee_1.json.
+3. Repeat with trustee_2.json, saving partials/trustee_2.json. This second run represents a second custodian, not sharing the first custodian's secret.
+
+**Terminal 1 — final count**
+
+Choose Combine and enter the two partial-response paths separated by a comma. Expected result: {'1': 1, '2': 1, '3': 0}. Never enter the secret trustee-share paths here: the combiner accepts the PUBLIC partial-response files, not private shares. For a real separation exercise, each trustee runs its utility on a different account/machine with just its own share.
+
+## 6. The algorithm, step by step
+
+1. Setup: RSA-4096 for AES-key wrapping, separate timestamp RSA identity, safe-prime threshold Paillier public key and three private shares with quorum two. Register trusted ElGamal voter public keys; encrypt each voter credential with its password.
+2. Voter converts selection into encrypted numeric ID plus one encrypted bit per candidate. Zero/one proofs, a one-hot sum witness and ID-link witness prevent malformed tallies without revealing the selected candidate.
+3. Serialize this inner ballot, compute SHA-512 and sign the digest with ElGamal. Save the ballot file with encrypted selections.
+4. Generate a new 32-byte AES key and 16-byte CBC IV. Encrypt the ballot and RSA-OAEP-wrap the key with the commission RSA-4096 public key. Add an HMAC covering the transport envelope.
+5. Client requests a timestamp. The trusted local timestamp service checks the signed ballot, uses SERVER time and signs hash/ballot/voter/time. Client checks the timestamp signature.
+6. Client submits the timestamped packet. Server checks window, envelope HMAC, SHA-512, registered voter signature, encrypted-choice proofs and replay/double-vote status before saving.
+7. Maintain HMAC constituency and minute-bucket indexes for searches. Signed saved state authenticates index/configuration changes.
+8. After closure, verify all ballots and aggregate candidate-bit ciphertexts. Export a signed request including the accepted encrypted ballots.
+9. Each trustee independently verifies ballots and recomputes aggregates, then produces partial decryptions with exponent-equality proofs for only those final ciphertexts.
+10. Combine enough different verified partials using integer Lagrange coefficients. Recover counts without reconstructing a private key or decrypting individual votes.
+
+Cryptographic ciphertexts, IVs, salts, nonces and signatures can vary between runs because encryption and key generation use randomness. Compare the recovered plaintext, verification booleans, search results and totals instead of expecting a fixed long ciphertext string. Q1 uses raw deterministic RSA, so its fixed worked example does reproduce the same small ciphertext integers.
+
+## 7. What is saved and why
+
+solution.py is an optional role launcher. server.py handles commission/admin/auditor menus and TCP requests. client.py casts votes. trustee.py holds one custodian role. crypto_helpers.py holds documented function-only primitives. storage/server_keys.json has the commission/timestamp identities; public_config.json is the trusted public configuration. election.json stores signed encrypted ballots/indexes. trustee_setup/*.json are secret one-time share handoff files. voter_credentials/*.json protect voter identities. outbox/ holds encrypted-choice ballot and transport files. tally_request.json, partials/*.json and final_tally.json implement the final quorum workflow.
+
+All generated state is written beside the script under the documented subfolders. Changing your terminal's current directory does not redirect the records. Reopening loads the previous keys and data. Keep the key files with the encrypted data; deleting keys does not decrypt or reset existing records. To start a completely separate practice run, copy the question folder to a new location before generating data.
+
+## 8. Every Python function explained
+
+Read functions in their file order. Inputs named `public` hold shareable encryption/verification parameters; `private`, `keys`, `record_keys` or `credentials` may contain secrets and must not be sent with an untrusted request.
+
+### File: `solution.py`
+
+#### `main()`
+
+Input: terminal role/entry selection. Launch server, voter client or single-trustee utility.
+
+Output: chosen program's normal interactive menu. Use separate terminals for server and client.
+
+Follow these calls when reading the implementation: `ask_text`, `run_server`, `run_client`, `run_trustee`.
+
+### File: `server.py`
+
+#### `save_election(folder, public, state, keys)`
+
+Input: configuration, election state and server identity. Sign the whole state and save public/state files.
+
+Output: persistent JSON files. Index/voter-list tampering is covered by the state signature.
+
+Follow these calls when reading the implementation: `rsa_sign`, `save_json`, `canonical`.
+
+#### `initialize_election(folder, duration_minutes=60, paillier_bits=512)`
+
+Input: storage directory, window length and teaching Paillier size. Generate RSA-4096 and 2-of-3 shares once.
+
+Output: public config, server keys and verified state. Secret trustee shares are separate setup handoff files.
+
+Follow these calls when reading the implementation: `read_json`, `threshold_keys`, `rsa_pair`, `save_json`, `save_election`, `display_time`, `ValueError`, `rsa_verify`, `canonical`, `get_random_bytes`.
+
+#### `register_voter(folder, public, keys, state, role, voter_id, password)`
+
+Input: admin role, unique safe voter ID and private-file password. Generate an ElGamal voter identity.
+
+Output: password-encrypted credential file path and updated trusted voter registry.
+
+Follow these calls when reading the implementation: `require_role`, `elgamal_identity`, `get_random_bytes`, `PBKDF2`, `save_json`, `save_election`, `audit`, `ValueError`, `seal`, `canonical`.
+
+#### `decrypt_ballot_packet(public, keys, packet)`
+
+Input: AES-CBC ballot envelope, RSA-wrapped AES key, SHA-512 digest and ElGamal signature.
+
+Output: validated inner ballot with Paillier-encrypted choices. It never decrypts a candidate value.
+
+Follow these calls when reading the implementation: `ValueError`, `cbc_decrypt`, `verify_ballot_hash`, `verify_choice`, `packet_authentication`, `canonical`.
+
+#### `issue_timestamp(public, keys, state, packet, now=None)`
+
+Input: validated signed ballot packet and server-side trusted clock. Issue a timestamp bound to this ballot hash.
+
+Output: RSA-signed timestamp token. Client-provided timestamps are never trusted.
+
+Follow these calls when reading the implementation: `decrypt_ballot_packet`, `rsa_sign`, `ValueError`, `canonical`.
+
+#### `accept_ballot(folder, public, keys, state, packet, now=None)`
+
+Input: signed/encrypted ballot packet and trusted timestamp. Verify all checks before persisting.
+
+Output: accepted ballot ID. Reject duplicate voters, replayed ballots, bad proofs or expired submissions.
+
+Follow these calls when reading the implementation: `decrypt_ballot_packet`, `token`, `save_election`, `audit`, `ValueError`, `validate_public_ballot`.
+
+#### `serve_votes(folder, public, keys, state, role, host, port, connections)`
+
+Input: admin role, bind address and request count. Serve timestamp/submission messages over framed TCP.
+
+Output: signed timestamps or acceptance/rejection replies. Each client vote normally makes TWO connections.
+
+Follow these calls when reading the implementation: `require_role`, `receive_json`, `send_json`, `audit`, `issue_timestamp`, `ValueError`, `accept_ballot`.
+
+#### `search_constituency(public, keys, state, role, constituency)`
+
+Input: admin/auditor role and constituency keyword. Query HMAC index without decrypting choices.
+
+Output: ballot ID list after validating matching signatures and exact constituency metadata.
+
+Follow these calls when reading the implementation: `require_role`, `token`, `ValueError`, `validate_public_ballot`.
+
+#### `search_time_range(public, keys, state, role, start, end)`
+
+Input: admin/auditor role and inclusive Unix-second range. Query keyed minute buckets then exact timestamps.
+
+Output: matching ballot IDs. Vote ciphertexts remain encrypted; maximum range is one day.
+
+Follow these calls when reading the implementation: `require_role`, `ValueError`, `token`, `validate_public_ballot`.
+
+#### `close_election(folder, public, keys, state, role)`
+
+Input: admin role and current election state. Irreversibly close this local election to new votes.
+
+Output: signed closed state persisted and audit event. Existing accepted ballots remain encrypted.
+
+Follow these calls when reading the implementation: `require_role`, `save_election`, `audit`.
+
+#### `export_tally(folder, public, keys, state, role)`
+
+Input: admin role after voting closes. Verify every accepted ballot and multiply each candidate's encrypted bits.
+
+Output: signed tally_request.json containing only encrypted votes and final aggregate ciphertexts.
+
+Follow these calls when reading the implementation: `require_role`, `rsa_sign`, `validate_tally_request`, `save_json`, `ValueError`, `close_election`, `encrypted_sum`, `canonical`, `validate_public_ballot`.
+
+#### `finalize_tally(folder, public, keys, state, role, partial_paths)`
+
+Input: admin role and partial-response files from enough distinct trustees. Validate request/response bindings and proofs.
+
+Output: candidate-count dictionary decrypted ONLY from aggregate ciphertexts, saved with signature.
+
+Follow these calls when reading the implementation: `require_role`, `read_json`, `validate_tally_request`, `rsa_sign`, `save_json`, `audit`, `ValueError`, `canonical`, `combine_partials`, `Path`.
+
+#### `server_role_menu(folder, public, keys, state, role)`
+
+Input: authenticated admin/auditor session. Manage registration, listening, search and closed-election tally.
+
+Output: stored encrypted ballots, indexed IDs, tally-request files and final aggregate counts.
+
+Follow these calls when reading the implementation: `ask_text`, `audit`, `register_voter`, `ask_int`, `serve_votes`, `close_election`, `export_tally`, `finalize_tally`, `search_constituency`, `float`, `search_time_range`, `verify_audit`.
+
+#### `main()`
+
+Input: first-run election window, role passwords and authenticated admin/auditor menu choices.
+
+Output: initialized RSA-4096 election server and role-based operations. Start before the voter client.
+
+Follow these calls when reading the implementation: `initialize_election`, `setup_accounts`, `ask_int`, `ask_text`, `login`, `server_role_menu`, `Path`.
+
+### File: `client.py`
+
+#### `load_credentials(path, password)`
+
+Input: voter credential file and its password. Derive AES key and authenticate/decrypt private identity.
+
+Output: voter ID/election/private ElGamal identity. Wrong passwords fail GCM verification.
+
+Follow these calls when reading the implementation: `read_json`, `PBKDF2`, `Path`, `ValueError`, `open_seal`.
+
+#### `packet_authentication(session, packet)`
+
+Input: AES session key and unsigned outer transport fields. Bind CBC ciphertext/IV, wrapped key and signature.
+
+Output: HMAC-SHA256 hex tag. This extra envelope check prevents unauthenticated CBC decryption.
+
+Follow these calls when reading the implementation: `canonical`.
+
+#### `build_packet(public, credentials, candidate_id, constituency)`
+
+Input: trusted public config, unlocked voter identity, selected candidate and constituency.
+
+Output: outer encrypted packet and inner ballot. Numeric selection stays Paillier-encrypted even inside AES.
+
+Follow these calls when reading the implementation: `sign_ballot_hash`, `get_random_bytes`, `cbc_encrypt`, `packet_authentication`, `ValueError`, `encrypted_choice`, `canonical`.
+
+#### `send_request(host, port, request)`
+
+Input: reachable server address and timestamp/submit request. Exchange one framed JSON request/reply.
+
+Output: successful reply; ValueError for a server rejection. No private voter key leaves this program.
+
+Follow these calls when reading the implementation: `send_json`, `receive_json`, `ValueError`.
+
+#### `cast_vote(public, credentials, candidate_id, constituency, host, port, outbox)`
+
+Input: unlocked voter identity, choice, constituency and server address. Timestamp then submit a fresh encrypted ballot.
+
+Output: receipt/ballot ID and saved ballot/packet files. Two TCP connections are used per vote.
+
+Follow these calls when reading the implementation: `build_packet`, `save_json`, `send_request`, `rsa_verify`, `ValueError`, `display_time`, `canonical`, `timestamp_payload`.
+
+#### `main()`
+
+Input: voter menu, trusted config path, credential/password, selected candidate and server details.
+
+Output: encrypted ballot and accepted receipt. Start the server's Listen option in another terminal.
+
+Follow these calls when reading the implementation: `ask_text`, `Path`, `read_json`, `load_credentials`, `ask_int`, `cast_vote`.
+
+### File: `trustee.py`
+
+#### `make_partial_response(public, request, credential)`
+
+Input: trusted public config, closed-election tally request and ONE trustee credential.
+
+Output: verifiable partial responses for final candidate aggregates only. No full private key is reconstructed.
+
+Follow these calls when reading the implementation: `validate_tally_request`, `ValueError`, `pow`, `partial_decrypt`, `canonical`.
+
+#### `main()`
+
+Input: trustee menu, trusted config, signed tally request and a single private share file.
+
+Output: partial-response JSON file for the admin to combine with another trustee's response.
+
+Follow these calls when reading the implementation: `ask_text`, `read_json`, `make_partial_response`, `Path`, `save_json`.
+
+### File: `crypto_helpers.py`
+
+These helpers contain the mathematics. The server/client menus call them; begin with the scenario flow before studying the proof equations.
+
+#### `ask_text(label, default=None)`
+
+Input: prompt and optional default. Read terminal text; Enter accepts a supplied default.
+
+Output: nonempty string. Use ask_text('Patient ID') when a value must be entered.
+
+Follow these calls when reading the implementation: `ValueError`, `input`.
+
+#### `ask_int(label, default=None, minimum=None, maximum=None)`
+
+Input: prompt, optional default and inclusive bounds. Read and validate an integer.
+
+Output: integer, or ValueError. Use for menu parameters, counts and cryptographic sizes.
+
+Follow these calls when reading the implementation: `ask_text`, `ValueError`.
+
+#### `canonical(record)`
+
+Input: JSON-compatible record. Sort keys and remove irrelevant spaces consistently.
+
+Output: UTF-8 bytes. Hash/sign these exact bytes so dictionary formatting cannot change results.
+
+#### `read_json(path, default=None)`
+
+Input: JSON file path and optional missing-file default. Parse saved records.
+
+Output: decoded JSON. Invalid JSON raises an error instead of silently replacing damaged data.
+
+Follow these calls when reading the implementation: `Path`.
+
+#### `save_json(path, record, secret=False)`
+
+Input: path, record and secret-file flag. Write via a temporary file then replace atomically.
+
+Output: saved JSON file; returns nothing. Secret files receive owner-only permissions.
+
+Follow these calls when reading the implementation: `Path`.
+
+#### `display_time(timestamp)`
+
+Input: Unix seconds. Format an explicit date/time in Asia/Kolkata.
+
+Output: readable timestamp string. Use for key expiry, voting windows and audit displays.
+
+Follow these calls when reading the implementation: `ZoneInfo`.
+
+#### `seal(data, key)`
+
+Input: plaintext bytes and 16/24/32-byte AES key. Encrypt/authenticate using GCM.
+
+Output: JSON-safe nonce/ciphertext/tag dictionary. Save all three for verified decryption.
+
+#### `open_seal(envelope, key)`
+
+Input: saved AES-GCM envelope and matching key. Verify the tag before returning data.
+
+Output: plaintext bytes; wrong keys/modified ciphertext raise ValueError.
+
+#### `cbc_encrypt(data, key)`
+
+Input: plaintext bytes and AES key. Generate a fresh IV, PKCS#7-pad and CBC-encrypt.
+
+Output: hex IV/ciphertext dictionary. Sign the envelope separately to detect modification.
+
+Follow these calls when reading the implementation: `pad`.
+
+#### `cbc_decrypt(envelope, key)`
+
+Input: authenticated CBC envelope and original AES key. Decrypt and remove padding.
+
+Output: plaintext bytes. Call only after verifying the enclosing signature/integrity checks.
+
+Follow these calls when reading the implementation: `unpad`.
+
+#### `rsa_sign(private_pem, data, algorithm='sha256')`
+
+Input: RSA private PEM, bytes to sign and sha256/md5/sha512 selection. Hash once and sign.
+
+Output: PKCS#1 v1.5 signature as hex. Private keys remain local; public keys verify.
+
+#### `rsa_verify(public_pem, data, signature, algorithm='sha256')`
+
+Input: trusted RSA public PEM, original bytes, signature hex and hash selection.
+
+Output: True if the signature matches; False for altered data, key or signature encoding.
+
+#### `rsa_pair(bits=2048)`
+
+Input: RSA modulus bits. Ask PyCryptodome to generate a fresh key pair.
+
+Output: dictionary of private/public PEM strings. Save the private part in a secret file.
+
+#### `random_unit(n)`
+
+Input: modulus. Choose a random value in 1..n-1 that has a modular inverse.
+
+Output: coprime random integer. Used as Paillier randomness and proof randomness.
+
+#### `paillier_encrypt(public, value, return_randomness=False)`
+
+Input: public key and integer in 0..n-1; optionally request the random witness.
+
+Output: ciphertext, or (ciphertext,r) for ballot proofs. Never publish an individual vote's r.
+
+Follow these calls when reading the implementation: `random_unit`, `ValueError`, `pow`.
+
+#### `check_ciphertext(public, ciphertext)`
+
+Input: Paillier public key and untrusted ciphertext integer. Validate its group/range.
+
+Output: nothing; raise ValueError if it is not an invertible element modulo n squared.
+
+Follow these calls when reading the implementation: `ValueError`.
+
+#### `encrypted_sum(public, ciphertexts)`
+
+Input: public Paillier key and ciphertext list. Multiply valid ciphertexts modulo n squared.
+
+Output: encrypted sum modulo n. This function has no private-key parameter and cannot decrypt inputs.
+
+Follow these calls when reading the implementation: `check_ciphertext`.
+
+#### `token(key, text)`
+
+Input: secret HMAC key and already normalized lookup string. Compute deterministic keyed hash.
+
+Output: hex lookup token. A search computes the same token without bulk decryption.
+
+#### `setup_accounts(path, roles)`
+
+Input: account file path and role names. On first use ask for each role's new password twice.
+
+Output: saved salted PBKDF2 password records. Existing passwords are never silently replaced.
+
+Follow these calls when reading the implementation: `read_json`, `save_json`, `get_random_bytes`, `PBKDF2`, `ValueError`.
+
+#### `authenticate(accounts, username, password)`
+
+Input: saved accounts, username and entered password. Derive and compare the salted password hash.
+
+Output: role string on success; ValueError on unknown account or wrong password.
+
+Follow these calls when reading the implementation: `PBKDF2`, `ValueError`.
+
+#### `login(accounts)`
+
+Input: username and hidden password from the terminal. Authenticate a previously created account.
+
+Output: username and assigned role; callers use that role to choose the allowed menu.
+
+Follow these calls when reading the implementation: `ask_text`, `authenticate`.
+
+#### `require_role(actual, allowed)`
+
+Input: authenticated role and allowed-role collection. Check permission inside the operation itself.
+
+Output: nothing on success; PermissionError on denial. Menus alone are not authorization checks.
+
+Follow these calls when reading the implementation: `PermissionError`.
+
+#### `audit(folder, event, details, private_pem)`
+
+Input: audit directory, event name, details and signing key. Chain and sign a new audit entry.
+
+Output: appended JSONL event. The previous-entry digest exposes edits, reordering and gaps.
+
+Follow these calls when reading the implementation: `rsa_sign`, `Path`, `canonical`.
+
+#### `verify_audit(folder, public_pem)`
+
+Input: audit directory and trusted signing public key. Verify signatures and previous-entry chain.
+
+Output: True when existing entries are intact. External anchoring is needed to detect deletion of the final suffix.
+
+Follow these calls when reading the implementation: `Path`, `rsa_verify`, `canonical`.
+
+#### `safe_prime(bits)`
+
+Input: prime bit length. Generate q and prime p=2q+1 for threshold Paillier/ElGamal groups.
+
+Output: (p,q). Small sizes are for quick practice; generation time varies.
+
+Follow these calls when reading the implementation: `getPrime`, `isPrime`.
+
+#### `threshold_keys(bits=512, count=3, threshold=2)`
+
+Input: modulus bits, trustee count and required quorum. Generate dealer-based threshold Paillier.
+
+Output: public parameters and separate secret shares. No lambda/mu/full decryption key is saved.
+
+Follow these calls when reading the implementation: `pow`, `ValueError`, `safe_prime`, `random_unit`.
+
+#### `proof_challenge(record)`
+
+Input: public proof transcript dictionary. Hash it into a 128-bit Fiat-Shamir challenge.
+
+Output: challenge integer. Context/domain strings keep unrelated proof types separate.
+
+Follow these calls when reading the implementation: `canonical`.
+
+#### `partial_decrypt(public, share, ciphertext, context)`
+
+Input: public parameters, ONE trustee's secret share, aggregate ciphertext and request context.
+
+Output: partial decryption plus equality-of-exponents proof. It never reconstructs a private key.
+
+Follow these calls when reading the implementation: `check_ciphertext`, `pow`, `proof_challenge`.
+
+#### `verify_partial(public, ciphertext, part, context)`
+
+Input: public key, aggregate, supplied partial/proof and bound request context.
+
+Output: boolean proving this partial uses the trustee's registered secret exponent.
+
+Follow these calls when reading the implementation: `proof_challenge`, `pow`.
+
+#### `combine_partials(public, ciphertext, parts, context)`
+
+Input: aggregate ciphertext and enough distinct verified partial decryptions for its request.
+
+Output: final plaintext aggregate. Integer Lagrange weights combine partials without recovering secret shares.
+
+Follow these calls when reading the implementation: `ValueError`, `Fraction`, `pow`, `verify_partial`.
+
+#### `elgamal_identity(bits=512)`
+
+Input: finite-field size. Generate safe prime, full generator and ElGamal signing identity.
+
+Output: private x and public p/g/y dictionary. The client keeps x secret.
+
+Follow these calls when reading the implementation: `safe_prime`, `pow`.
+
+#### `sign_ballot_hash(identity, digest_hex)`
+
+Input: private ElGamal identity and SHA-512 ballot digest. Sign that digest directly.
+
+Output: (r,s) signature list. A fresh invertible nonce is required for every ballot.
+
+Follow these calls when reading the implementation: `pow`.
+
+#### `verify_ballot_hash(identity, digest_hex, signature)`
+
+Input: trusted public ElGamal identity, SHA-512 digest and (r,s) signature.
+
+Output: validity boolean. Never accept a public key sent by a new unregistered voter.
+
+Follow these calls when reading the implementation: `pow`.
+
+#### `bit_proof(public, ciphertext, bit, r, context)`
+
+Input: encryption of known bit 0/1, its secret randomness and unique ballot/candidate context.
+
+Output: OR proof that the encrypted number is 0 or 1 without disclosing which bit.
+
+Follow these calls when reading the implementation: `random_unit`, `pow`, `proof_challenge`, `ValueError`.
+
+#### `verify_bit(public, ciphertext, proof, context)`
+
+Input: Paillier ciphertext, OR proof and its ballot/candidate context. Verify both challenge branches.
+
+Output: boolean. This prevents encrypted 2, negative values or oversized fake vote counts.
+
+Follow these calls when reading the implementation: `check_ciphertext`, `proof_challenge`, `pow`.
+
+#### `encrypted_choice(public, candidate_ids, selected_id, ballot_id)`
+
+Input: public Paillier key, configured candidate IDs, selected ID and fresh ballot ID.
+
+Output: encrypted numeric ID plus encrypted one-hot vector and proofs linking both representations.
+
+Follow these calls when reading the implementation: `paillier_encrypt`, `ValueError`, `bit_proof`, `pow`.
+
+#### `verify_choice(public, candidate_ids, choice, ballot_id)`
+
+Input: encrypted choice bundle and fixed candidate list. Verify bit proofs, one-hot sum and numeric-ID link.
+
+Output: True only for one valid encrypted selection. Individual votes are never decrypted.
+
+Follow these calls when reading the implementation: `check_ciphertext`, `encrypted_sum`, `pow`, `verify_bit`.
+
+#### `send_json(connection, record)`
+
+Input: connected TCP socket and JSON record. Send a 4-byte size then exact JSON bytes.
+
+Output: transmitted frame. Maximum 4 MB prevents unbounded message allocation.
+
+Follow these calls when reading the implementation: `canonical`, `ValueError`.
+
+#### `receive_exact(connection, size)`
+
+Input: TCP socket and exact byte count. Keep reading because TCP can split a send into pieces.
+
+Output: complete bytes, or ValueError on an early peer disconnect.
+
+Follow these calls when reading the implementation: `bytearray`, `ValueError`.
+
+#### `receive_json(connection)`
+
+Input: connected socket. Read a bounded length-framed JSON message.
+
+Output: parsed JSON value. Use with send_json for request/reply exchanges.
+
+Follow these calls when reading the implementation: `receive_exact`, `ValueError`.
+
+#### `timestamp_payload(stamp)`
+
+Input: signed timestamp dictionary. Remove its signature before verification.
+
+Output: timestamp fields bound to ballot hash, voter, ballot ID, issuer time and serial.
+
+#### `validate_public_ballot(public, record)`
+
+Input: trusted election config and accepted ballot with encrypted choices/signature/timestamp.
+
+Output: True after voter, SHA-512, ElGamal, timestamp, window and encrypted-choice proof checks.
+
+Follow these calls when reading the implementation: `verify_choice`, `verify_ballot_hash`, `rsa_verify`, `canonical`, `timestamp_payload`.
+
+#### `tally_payload(request)`
+
+Input: saved signed tally request. Remove request signature before hashing/verifying.
+
+Output: complete public tally request fields, including all accepted encrypted ballots.
+
+#### `validate_tally_request(public, request)`
+
+Input: trusted public configuration and server-signed final tally request.
+
+Output: nothing on success. Reject invalid/duplicate ballots or aggregates that differ from recomputation.
+
+Follow these calls when reading the implementation: `ValueError`, `rsa_verify`, `encrypted_sum`, `canonical`, `tally_payload`, `validate_public_ballot`.
+
+#### `packet_authentication(session, packet)`
+
+Input: session key and outer packet fields. Recompute authenticated CBC-envelope HMAC.
+
+Output: tag hex. Server compares it before CBC decryption; timestamp has its own RSA signature.
+
+Follow these calls when reading the implementation: `canonical`.
+
+## 9. How to read the menu code
+
+`solution.py` begins here when you run it:
+
+```python
+def main():
+    """Input: terminal role/entry selection. Launch server, voter client or single-trustee utility.
+    Output: chosen program's normal interactive menu. Use separate terminals for server and client.
+    """
+    while True:
+        print("\n1 Election server  2 Voter client  3 Trustee utility  0 Exit")
+        choice = ask_text("Choice")
+        if choice == "0":
+            return
+        try:
+            if choice == "1":
+                from server import main as run_server
+
+                run_server()
+            elif choice == "2":
+                from client import main as run_client
+
+                run_client()
+            elif choice == "3":
+                from trustee import main as run_trustee
+
+                run_trustee()
+            else:
+                print("Choose a listed option.")
+        except (ValueError, KeyError, TypeError, PermissionError, OSError) as error:
+            print("Rejected:", error)
+```
+
+`server.py` begins here when you run it:
+
+```python
+def main():
+    """Input: first-run election window, role passwords and authenticated admin/auditor menu choices.
+    Output: initialized RSA-4096 election server and role-based operations. Start before the voter client.
+    """
+    folder = Path(__file__).resolve().parent / "storage"
+    duration = (
+        ask_int("First-run voting window minutes", 60, 1, 1440)
+        if not (folder / "server_keys.json").exists()
+        else 60
+    )
+    public, keys, state = initialize_election(folder, duration)
+    accounts = setup_accounts(folder / "accounts.json", ("admin", "auditor"))
+    while True:
+        print("\n1 Login  0 Exit")
+        try:
+            choice = ask_text("Choice")
+            if choice == "0":
+                return
+            if choice == "1":
+                username, role = login(accounts)
+                server_role_menu(folder, public, keys, state, role)
+            else:
+                print("Choose 1 or 0.")
+        except (ValueError, PermissionError, OSError) as error:
+            print("Rejected:", error)
+```
+
+`client.py` begins here when you run it:
+
+```python
+def main():
+    """Input: voter menu, trusted config path, credential/password, selected candidate and server details.
+    Output: encrypted ballot and accepted receipt. Start the server's Listen option in another terminal.
+    """
+    folder = Path(__file__).resolve().parent
+    while True:
+        print("\n1 Cast encrypted vote  0 Exit")
+        try:
+            choice = ask_text("Choice")
+            if choice == "0":
+                return
+            if choice != "1":
+                print("Choose 1 or 0.")
+                continue
+            config_path = Path(
+                ask_text(
+                    "Trusted public config path", str(folder / "storage" / "public_config.json")
+                )
+            )
+            public = read_json(config_path)
+            print("Candidates:", public["candidate_ids"], "Election:", public["election_id"])
+            credential = Path(ask_text("Voter credential path"))
+            unlocked = load_credentials(credential, getpass.getpass("Credential password: "))
+            candidate = ask_int("Selected numerical candidate ID")
+            constituency = ask_text("Constituency ID")
+            host = ask_text("Server host", "127.0.0.1")
+            port = ask_int("Port", 6044, 1024, 65535)
+            cast_vote(public, unlocked, candidate, constituency, host, port, folder / "outbox")
+        except (ValueError, KeyError, TypeError, OSError) as error:
+            print("Rejected:", error)
+```
+
+`trustee.py` begins here when you run it:
+
+```python
+def main():
+    """Input: trustee menu, trusted config, signed tally request and a single private share file.
+    Output: partial-response JSON file for the admin to combine with another trustee's response.
+    """
+    folder = Path(__file__).resolve().parent
+    while True:
+        print("\n1 Verify final request and produce ONE trustee response  0 Exit")
+        try:
+            choice = ask_text("Choice")
+            if choice == "0":
+                return
+            if choice != "1":
+                print("Choose 1 or 0.")
+                continue
+            public = read_json(
+                Path(
+                    ask_text(
+                        "Trusted public config", str(folder / "storage" / "public_config.json")
+                    )
+                )
+            )
+            request = read_json(
+                Path(
+                    ask_text("Signed tally request", str(folder / "storage" / "tally_request.json"))
+                )
+            )
+            credential = read_json(Path(ask_text("Your ONE trustee share file")))
+            response = make_partial_response(public, request, credential)
+            path = Path(
+                ask_text(
+                    "Save response path",
+                    str(folder / "partials" / f'trustee_{response["trustee_id"]}.json'),
+                )
+            )
+            save_json(path, response)
+            print(
+                "Partial response saved:",
+                path,
+                "No individual votes or private shares were decrypted/reconstructed.",
+            )
+        except (ValueError, KeyError, TypeError, OSError) as error:
+            print("Rejected:", error)
+```
+
+The `if __name__ == "__main__": main()` line at the bottom starts the menu when the file is run directly. Importing the file to reuse its functions does not automatically start the menu. A `try/except` around each operation turns ordinary bad input into a readable error so you can return to the menu.
+
+## 10. Python details that matter here
+
+- `text.encode()` converts Python text into bytes. Cryptographic libraries operate on bytes, not Python strings.
+- `bytes.fromhex(text)` restores bytes from a printed hexadecimal string; `.hex()` does the reverse.
+- A dictionary such as `record['signature']` keeps named fields together without defining a class.
+- `pow(a, e, n)` computes modular exponentiation efficiently; `pow(a, -1, n)` computes a modular inverse when one exists.
+- `canonical(record)` is used before hashing/signing. Never hash an ordinary dictionary representation or rely on key insertion order.
+- A verifier must check the signature with a **previously trusted** public key. A key supplied by an unknown sender does not prove identity.
+- Menu code gathers inputs. Separate functions do cryptography, indexing, authorization and storage so you can adapt the question without rewriting everything.
+- Cryptographic API calls such as `AES.new(...)` return library cipher objects. You do not define classes or use object-oriented application design in these solutions.
+
+## 11. Verification, failures and exam modifications
+
+- First perform the successful worked run, then repeat with different input values.
+- Try a missing record ID, an unlisted menu choice, the wrong role, an incorrect password, or a changed ciphertext/signature where applicable. The operation should fail rather than print an apparently valid result.
+- Always verify before exposing selected plaintext. Do not continue decryption after a failed integrity check.
+- Search must use an index; do not decrypt every record to test whether a keyword occurs.
+- For homomorphic totals, aggregation receives the public key and ciphertexts. Keep private-key decryption at the final result step.
+- Match the question's exact key length, hash and cipher mode. AES-192-CBC is not interchangeable with AES-256-GCM when the question specifically requests CBC.
+- If the examiner changes field names or the application story, adapt the input/record dictionaries and menus. Keep the canonical serialization, key handling, verification order and mathematical functions.
+- If you edit data legitimately, encrypt/sign the new state through the authorized function. Editing JSON directly is a tampering test, not an authorized update.
+
+## 12. Assumptions, corrections and practical limits
+
+This is an educational local election simulation, not a national-election deployment. RSA really uses 4096 bits, AES uses 256-bit CBC, and the hash is SHA-512. Finite-field ElGamal and Paillier use 512-bit practice parameters so setup is usable while studying; these are not production security sizes. Summing candidate IDs is ambiguous, so counts use a separately encrypted one-hot vector linked to the encrypted numeric ID. To avoid exposing choices when verifying the AES-decrypted ballot hash, the inner ballot stores Paillier ciphertext selections instead of a plaintext candidate ID. This is an explicit resolution of the prompt’s otherwise conflicting privacy/verification requirements. The timestamp authority is a separately keyed logical service inside the server process using its trusted clock, not an independent network authority. Setup is a trusted dealer and creates all shares once; move shares to separate custodians for meaningful separation. The server application stores no full Paillier private key and combines proven partial decryptions, rather than Shamir-reconstructing a key. Public configuration must arrive through a trusted channel. Proofs and threshold arithmetic are included for correctness/learning; this custom protocol has not undergone a production security audit. Constituency, turnout, timing and access patterns are metadata, not fully hidden.
+
+## 13. Why Q4 needs more than the other questions
+
+**Why not just sum the IDs?** Candidate IDs 1 and 3 sum to 4, and two votes for candidate 2 also sum to 4. The same number cannot tell those elections apart. A one-hot vector solves this: a vote for candidate 2 becomes [0,1,0]. Encrypt each position separately, add each position while encrypted, and decrypt only the final three counts. The numeric candidate ID is separately encrypted and linked to that vector as requested.
+
+**Why not decrypt the ballot to verify its hash and keep its choice secret?** If the ballot stored the candidate ID in plaintext inside AES, any verifier who decrypted AES to hash it would see the vote. This implementation stores the choice as Paillier ciphertext even within the AES-protected ballot. The server can therefore inspect/verify the ballot representation while its choice remains encrypted. The code and explanation make that protocol decision explicit.
+
+**What do the extra proofs accomplish?** A signed client could still submit encrypted 20 instead of a single vote. A zero-or-one proof validates each encrypted vector entry without revealing it. A sum witness proves the vector contains exactly one selection. A link witness proves the encrypted numeric ID agrees with that selection. You can follow ordinary encryption first, then study these helpers as a separate advanced step.
+
+**How is threshold decryption different from splitting and reconstructing a key?** The setup dealer generates a polynomial over the threshold Paillier group parameters and hands each trustee one secret evaluation. Each trustee raises an aggregate ciphertext to an exponent derived from only its share. A combiner checks proofs and multiplies partial results with integer Lagrange weights. It recovers the final counts without recreating a private exponent. This is actual partial-decryption arithmetic, not a menu that reconstructs all private material in one process. Trusted setup and physical share separation remain assumptions.
+
+**References for the advanced mathematics:** The implementation follows the safe-prime threshold-Paillier structure described by the [UT Dallas Paillier Threshold Encryption Toolbox manual](https://bpb-us-e2.wpmucdn.com/labs.utdallas.edu/dist/0/60/files/2023/07/manual.pdf) and the [Damgård–Jurik threshold cryptosystem paper](https://www.iacr.org/archive/asiacrypt2001/22480353.pdf). The program is written using functions rather than adopting the toolbox's object-oriented Java API.
+

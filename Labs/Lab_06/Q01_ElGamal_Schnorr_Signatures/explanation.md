@@ -1,0 +1,120 @@
+# Lab 6 Q1: ElGamal and Schnorr signatures
+
+## What the manual asks
+
+Repeat signature generation and verification using ElGamal and Schnorr.
+
+## Start here: the idea in plain English
+
+Generate a safe prime and appropriate generators. ElGamal chooses a nonce invertible modulo p-1 and signs the SHA-256 hash. Schnorr works in a prime-order subgroup, hashes a commitment together with the message, and constructs a response. Verify both signatures on the original and on changed data. These are signature algorithms, not encryption operations.
+
+## How to run
+
+From this question folder, run:
+
+```bash
+../../../.venv/bin/python solution.py
+```
+
+The program is interactive. If you installed dependencies into another environment, use that environment's Python instead. Read `Labs/README.md` for setup. Paths above assume the environment is in the project root, beside `Labs`.
+
+Press 1 to run an exercise, enter your values or press Enter for the displayed default, and press 0 to exit. Input conversion and validation errors are printed without terminating the interactive menu. Each function can also be imported and called separately.
+
+## Step-by-step solution
+
+1. Start the program and select Run. Read the displayed default inputs before changing them.
+2. Follow the input prompts. Text is encoded to bytes when required; numeric inputs are checked before cryptographic operations.
+3. Read the `exercise()` function below: it connects the functions in the order needed for this question.
+4. Compare the printed output with the expected result, and repeat using a different input.
+
+```python
+def exercise():
+    """Input: message and demonstration bit size. Sign and verify using ElGamal and Schnorr.
+    Output: parameters, signatures, valid checks and rejection of modified messages.
+    """
+    message = ask_text("Message", "A digitally signed document").encode()
+    bits = ask_int("Demo safe-prime bits", 256, 64, 2048)
+    p, q, g, h = signature_group(bits)
+    x = secrets.randbelow(q - 1) + 1
+    y = pow(g, x, p)
+    signature = elgamal_sign(message, p, g, x)
+    print("ElGamal public:", {"p": p, "g": g, "y": y}, "Signature:", signature)
+    print(
+        "Valid:",
+        elgamal_verify(message, signature, p, g, y),
+        "Tampered:",
+        elgamal_verify(message + b"!", signature, p, g, y),
+    )
+    sx = secrets.randbelow(q - 1) + 1
+    sy = pow(h, sx, p)
+    ss = schnorr_sign(message, p, q, h, sx)
+    print("Schnorr public:", {"p": p, "q": q, "h": h, "y": sy}, "Signature:", ss)
+    print(
+        "Valid:",
+        schnorr_verify(message, ss, p, q, h, sy),
+        "Tampered:",
+        schnorr_verify(message + b"!", ss, p, q, h, sy),
+    )
+```
+
+Follow the calls in `exercise()` from top to bottom. It obtains the inputs, calls the small functions that do the work, and prints intermediate values and the final result. Bytes are shown as hexadecimal when ordinary text would be unreadable. A successful round trip prints a recovered message equal to the input; verification examples also show a changed message being rejected where applicable.
+
+## Every function explained
+
+### `ask_text(label, default)`
+
+Input: a prompt and default string. Read text, or use the default when Enter is pressed.
+Output: a string. Use ask_text('Message', 'hello') to let the user choose a message.
+
+### `ask_int(label, default, minimum, maximum)`
+
+Input: prompt, default integer, optional inclusive limits. Read and validate a number.
+Output: an integer; raise ValueError on bad input. Use for keys, counts, or amounts.
+
+### `signature_group(bits)`
+
+Input: safe-prime demonstration bit size. Generate p=2q+1, a full generator and subgroup generator.
+Output: (p,q,g,h) with g order 2q and h=g^2 order q. Used for ElGamal and Schnorr.
+
+### `elgamal_sign(message, p, g, private)`
+
+Input: message bytes, prime p, full generator g and private exponent. Sign SHA-256 digest.
+Output: (r,s) signature. Fresh nonce k must be invertible modulo p-1 and never reused.
+
+### `elgamal_verify(message, signature, p, g, public)`
+
+Input: message bytes, (r,s), parameters and public y=g^private. Check ElGamal equation.
+Output: boolean. Use elgamal_verify(data, signature, p, g, y).
+
+### `schnorr_challenge(commitment, message, q)`
+
+Input: integer commitment, message bytes and subgroup order. Hash both with unambiguous framing.
+Output: challenge integer modulo q. Used identically by signer and verifier.
+
+### `schnorr_sign(message, p, q, h, private)`
+
+Input: message and Schnorr subgroup/private key. Commit with a fresh nonce and answer challenge.
+Output: (challenge,response). response=nonce+challenge*private modulo q.
+
+### `schnorr_verify(message, signature, p, q, h, public)`
+
+Input: message, signature, subgroup and public y=h^private. Rebuild the commitment.
+Output: boolean comparing the recomputed challenge against the signature challenge.
+
+### `exercise()`
+
+Input: message and demonstration bit size. Sign and verify using ElGamal and Schnorr.
+Output: parameters, signatures, valid checks and rejection of modified messages.
+
+### `main()`
+
+Input: terminal choices. Run the exercise safely.
+Output: printed results. Use python solution.py and choose a menu option.
+
+## What to change during an exam
+
+Change values through the prompts first. For a different scenario, replace the example messages or record fields in `exercise()`, and keep the cryptographic functions. Match the requested algorithm, key size, mode, and hash exactly. Store IVs/nonces alongside ciphertext when needed. Keep private keys private. Hashing cannot be decrypted; encryption can. A hash by itself does not prove who sent a message.
+
+## Notes and limitations
+
+The small finite-field size is for quick arithmetic practice. Never reuse signature nonces: doing so can expose private keys. These readable textbook implementations are not standardized production signature encodings.

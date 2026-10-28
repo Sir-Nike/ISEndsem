@@ -1,0 +1,103 @@
+Lab 7 additional 1b: Secure data sharing using Paillier
+
+What the manual asks
+
+Simulate two parties sharing encrypted data and computing over combined values without decryption.
+
+Start here: the idea in plain English
+
+Two data owners use a common public key to encrypt their local amounts. An aggregator receives only ciphertext lists and multiplies them modulo n squared. A separate key holder decrypts the combined total. The function boundaries show which role needs the public key and which needs the private key.
+
+How to run
+
+From this question folder, run:
+
+../../../.venv/bin/python solution.py
+
+
+The program is interactive. If you installed dependencies into another environment, use that environment's Python instead. Read Labs/README.md for setup. Paths above assume the environment is in the project root, beside Labs.
+
+Press 1 to run an exercise, enter your values or press Enter for the displayed default, and press 0 to exit. Input conversion and validation errors are printed without terminating the interactive menu. Each function can also be imported and called separately.
+
+Step-by-step solution
+
+1. Start the program and select Run. Read the displayed default inputs before changing them.
+2. Follow the input prompts. Text is encoded to bytes when required; numeric inputs are checked before cryptographic operations.
+3. Read the exercise() function below: it connects the functions in the order needed for this question.
+4. Compare the printed output with the expected result, and repeat using a different input.
+
+def exercise():
+    """Input: two comma-separated lists of nonnegative amounts. Simulate owners and aggregator.
+    Output: encrypted contributions and the single decrypted combined sum.
+    """
+    public, private = paillier_keys(512)
+    first = [int(x) for x in ask_text("Party A amounts", "10,20,30").split(",")]
+    second = [int(x) for x in ask_text("Party B amounts", "5,15,25").split(",")]
+    if sum(first + second) >= public["n"]:
+        raise ValueError("Total would wrap modulo n.")
+    encrypted_a = encrypt_party_values(public, first)
+    encrypted_b = encrypt_party_values(public, second)
+    print("Party A encrypted:", encrypted_a, "Party B encrypted:", encrypted_b)
+    aggregate = encrypted_sum(public, encrypted_a + encrypted_b)
+    result = paillier_decrypt(public, private, aggregate)
+    print(
+        "Encrypted total:",
+        aggregate,
+        "Final plaintext total:",
+        result,
+        "Verified:",
+        result == sum(first + second),
+    )
+
+
+Follow the calls in exercise() from top to bottom. It obtains the inputs, calls the small functions that do the work, and prints intermediate values and the final result. Bytes are shown as hexadecimal when ordinary text would be unreadable. A successful round trip prints a recovered message equal to the input; verification examples also show a changed message being rejected where applicable.
+
+Every function explained
+
+ask_text(label, default)
+
+Input: a prompt and default string. Read text, or use the default when Enter is pressed.
+Output: a string. Use ask_text('Message', 'hello') to let the user choose a message.
+
+paillier_keys(bits)
+
+Input: desired modulus size. Generate p/q and compute Paillier parameters with g=n+1.
+Output: (public dictionary n/g, private dictionary lambda/mu). Keep private values secret.
+
+paillier_encrypt(public, message)
+
+Input: public n/g and integer 0<=message<n. Choose fresh random r coprime to n.
+Output: ciphertext g^message * r^n modulo n^2. Same message encrypts differently each time.
+
+paillier_decrypt(public, private, ciphertext)
+
+Input: matching public/private keys and valid ciphertext. Apply L(c^lambda)*mu modulo n.
+Output: plaintext integer modulo n. L(u) means (u-1)//n.
+
+encrypted_sum(public, ciphertexts)
+
+Input: public key and iterable of Paillier ciphertexts. Multiply modulo n^2.
+Output: encryption of the sum modulo n. No individual plaintext or private key is needed.
+
+encrypt_party_values(public, values)
+
+Input: shared public key and one owner's integer list. Encrypt each local value.
+Output: list of randomized Paillier ciphertexts. Send these to the aggregator.
+
+exercise()
+
+Input: two comma-separated lists of nonnegative amounts. Simulate owners and aggregator.
+Output: encrypted contributions and the single decrypted combined sum.
+
+main()
+
+Input: terminal choices. Run the exercise safely.
+Output: printed results. Use python solution.py and choose a menu option.
+
+What to change during an exam
+
+Change values through the prompts first. For a different scenario, replace the example messages or record fields in exercise(), and keep the cryptographic functions. Match the requested algorithm, key size, mode, and hash exactly. Store IVs/nonces alongside ciphertext when needed. Keep private keys private. Hashing cannot be decrypted; encryption can. A hash by itself does not prove who sent a message.
+
+Notes and limitations
+
+All roles are simulated in one Python process. In a deployed system the aggregator should not receive the private key. The program decrypts only the final aggregate and does not claim to authenticate owner contributions.

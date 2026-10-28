@@ -1,0 +1,117 @@
+{
+  "Q01_RSA_Box_Cost": {
+    "title": "Q1: RSA encrypted box-cost multiplication",
+    "details": {
+      "idea": "Calculate a product while its two inputs remain encrypted. This uses textbook RSA, not padded RSA-OAEP.",
+      "walkthrough": "Use menu 1 \u2192 input mode 1 \u2192 p=61, q=53, e=17. The program derives n=3233 and d=2753. Choose menu 2 and enter 7 boxes at cost 3. Choose 3 to multiply ciphertexts, then 4 to decrypt/verify. The recovered product is 21. These numbers are a worked example in this explanation only; code prompts have no fixed defaults for exam parameters.",
+      "flow": [
+        "Read/derive n,e,d from values supplied in the exam.",
+        "Validate boxes and cost individually in 1..n-1 before encrypting.",
+        "Compute c_boxes=boxes^e mod n and c_cost=cost^e mod n.",
+        "Pass only c_boxes, c_cost and n into multiply_ciphertexts.",
+        "Compute c_product=c_boxes*c_cost mod n.",
+        "Decrypt c_product^d mod n; compare with boxes*cost modulo n."
+      ],
+      "files": "No data files are required; inputs live in memory for the current menu session.",
+      "caveats": "The property applies to raw RSA. OAEP is correct for secure message encryption but cannot replace raw RSA in this arithmetic exercise. Costs are integers (use paise if needed). Inputs may both be less than n while their product is greater than n: compare modulo n, and display the ordinary product separately. Supplied n/e/d can be checked on sample values but cannot be fully certified from those three values alone."
+    },
+    "files": [
+      "solution.py"
+    ]
+  },
+  "Q02_Patient_Records": {
+    "title": "Q2: Patient records, AES, SHA-256, RSA and Paillier",
+    "details": {
+      "idea": "AES protects each full patient record, RSA signatures detect modifications, SHA-256 fingerprints a selected record, Paillier permits glucose totals without decrypting each glucose, and HMAC indexing finds diagnoses without scanning decrypted records.",
+      "walkthrough": "On first run choose AES length 32 (or 16/24). Choose 10 and enter the supplied dataset. The actual exam dataset is absent from pyq.txt, so three clearly labeled example rows are provided as editable defaults: P001 glucose 140, P002 glucose 95, P003 glucose 160. Choose 2 to encrypt, 4 to sign, then 5: True. Choose 6: final glucose total 395. Choose 7 and Diabetes: IDs P001 and P003. Choose 8 and P001: one verified decrypted record. Choose 11 and type TAMPER to damage a ciphertext, then 5: False; option 8 must refuse. Recover by re-encrypting unchanged source with 2 and signing with 4. Exit with 9.",
+      "flow": [
+        "Enter the five fields for each patient; reject duplicate IDs and invalid glucose.",
+        "AES-GCM-encrypt canonical bytes of each patient record; store nonce, tag and ciphertext.",
+        "Separately Paillier-encrypt the numeric glucose for aggregation.",
+        "Build a diagnosis HMAC token to patient-ID inverted index.",
+        "Sign the plaintext source and complete encrypted snapshot separately with RSA-2048/SHA-256. Before signing, check they represent the same data.",
+        "For sums/search/decryption, verify both signatures first.",
+        "Compute encrypted total with ciphertext multiplication modulo n squared, then decrypt only the total.",
+        "For option 8, decrypt only the selected record after verification."
+      ],
+      "files": "storage/Patient_records.json contains the required source dataset. storage/encrypted_patient_records.json stores AES records, encrypted glucose and diagnosis index. keys.json stores persistent secret/public keys; dataset_signature.json stores two RSA signatures. The extra files supply the key/signature state needed for restart.",
+      "caveats": "The question explicitly asks for an original patient file, so source data exists in plaintext with owner-only permissions. That file is for the lab requirement, not a confidentiality claim about the whole directory. Signing intentionally checks the source against encrypted values; the finance-style sum operation itself decrypts only the aggregate. The example dataset is illustrative, not a recovered exam dataset. Paillier defaults to a quick 512-bit teaching modulus; it is not a production parameter. RSA signatures authorize the exact saved snapshot, so changing even an index or unrelated record invalidates that snapshot."
+    },
+    "files": [
+      "solution.py"
+    ]
+  },
+  "Q03_Grant_Expense_Portal": {
+    "title": "Q3: Secure grant expense portal",
+    "details": {
+      "idea": "Researcher submits encrypted grants. Reviewer checks encrypted-record integrity and reads descriptions. Finance adds encrypted amounts and decrypts only the final sum. Password-checked roles constrain each menu and sensitive function.",
+      "walkthrough": "On first launch create three passwords: researcher, reviewer, finance. Login as researcher and submit G001 / Microscope / 1250.50, then G002 / Lab supplies / 249.50. View encrypted submissions; logout. Login as reviewer, find G001 and verify it, then display its description as hex (4d 69 63 72 6f 73 63 6f 70 65). Logout; login as finance and aggregate G001,G002: total 1500.00. Exit and reopen: both grants remain visible. To test tampering without altering original study files, copy the question folder, change one amount ciphertext digit in the copied storage/grants.json, and rerun reviewer verification/finance aggregate: both must reject.",
+      "flow": [
+        "Create/load role accounts and cryptographic keys. AES description key is exactly 24 bytes.",
+        "Convert amount text into exact integer paise. Reject negative values, excessive precision and duplicate IDs.",
+        "AES-192-GCM encrypt description and Paillier-encrypt amount.",
+        "Create canonical encrypted grant record, compute MD5, sign that MD5 digest using RSA PKCS#1 v1.5.",
+        "Persist encrypted record, HMAC Grant-ID index, digest and signature.",
+        "Reviewer recomputes MD5 and verifies RSA on stored encrypted bytes without decrypting the amount.",
+        "Reviewer alone may decrypt the selected description and display its hex dump.",
+        "Finance forms ciphertext aggregate; signatures must all verify before aggregate decryption."
+      ],
+      "files": "storage/grants.json stores encrypted records and the Grant-ID index. keys.json stores AES-192, RSA, Paillier and HMAC keys. accounts.json stores salted password hashes (not plaintext passwords). audit.jsonl chains/signs operation events. All paths are relative to this script location.",
+      "caveats": "The question does not define what exact bytes constitute the hashed grant record. Here MD5 covers the canonical ENCRYPTED record, including ID, encrypted description/amount and creation metadata, so reviewers can recompute it without exposing individual amounts. MD5 is included because this PYQ specifically requires it; SHA-256 is preferable for a new design. Roles are authenticated within this local lab application, but a person who controls the OS account and key files controls the simulation. Paillier defaults to a small teaching modulus. Signed audit chains expose internal changes but require external anchoring to detect removal of an entire final suffix."
+    },
+    "files": [
+      "solution.py"
+    ]
+  },
+  "Q05_Report_Management": {
+    "title": "Q5: Expiring-key report management with HMAC search and audit",
+    "details": {
+      "idea": "Staff derives an AES-192 key with the specified 10-round KDF, encrypts report ID/department, hashes the description, creates keyword HMAC tokens and signs the stored record. Admin searches without decryption and can decrypt only a chosen verified record while its key remains within the original 120-second lifetime.",
+      "walkthrough": "Create staff/admin passwords on first launch. Login as staff, add R001 / Oncology / Monthly cancer screening report, and enter any nonempty KDF password. Write down the opaque locator printed by the program. The program shows description SHA-256, full RSA signature, issue time and expiry exactly 120 seconds later. Quickly logout and login as admin. Search screening: matching locator only, with no decryption. Use View one and that locator: ID and department appear. Change department to Research with a reason; view audit to see both old/new departments. After 120 seconds, View one refuses even after restarting. Signature verification may still be True: authenticity and key validity are separate checks. For tampering practice, add a fresh record and choose Simulate key tampering, confirm TAMPER, then verify: key_integrity and overall become False and a signed tampering_detected event is recorded. Ciphertext tampering instead makes the RSA signature False.",
+      "flow": [
+        "Create a fresh random salt and derive exactly 24 bytes using PBKDF2-HMAC-SHA256, count=10.",
+        "Set issued_at=now and expires_at=now+120 once; persist them.",
+        "SHA-256 hash the description (do not call this reversible encoding).",
+        "CBC-encrypt canonical report ID/department with a fresh 16-byte IV.",
+        "HMAC-normalize each description keyword into an inverted index token.",
+        "Sign encrypted fields, description hash, expiry, key ID, salt and key commitment with RSA-2048/PKCS#1 v1.5/SHA-256.",
+        "Search returns opaque locators; verify signed keyword membership and decrypt no records.",
+        "Admin selects one locator; verify RSA, key commitment/metadata and expiry before CBC decryption.",
+        "Audit legitimate department changes and rejected/tampered operations in a signed hash chain."
+      ],
+      "files": "storage/reports.json contains signed encrypted records plus HMAC inverted index. record_keys.json stores per-report expiring AES keys with owner-only permissions. system_keys.json contains RSA identity and HMAC index key. accounts.json contains salted password hashes. audit.jsonl records signed events, including department changes and key/ciphertext tampering.",
+      "caveats": "PBKDF2 with 10 iterations intentionally follows the question and is far too weak for a new password-storage design; login passwords separately use 200000 iterations. Stored descriptions are SHA-256 digests and HMAC keyword tokens, not plaintext; you cannot recover full descriptions from hashes. A changed external AES key does not mathematically invalidate an unchanged RSA signature; the signed key commitment detects it. The program prints rsa_signature and key_integrity separately, then overall=False and audits the failure. Expired keys are refused rather than silently renewed or reused. Searching/hashing/signature checks do not require using an expired AES key. System time is trusted; true OS clock rollback resistance is outside a local script. The phrase about department changes is interpreted as requiring legitimate changes to be audited and unauthorized edits to fail verification."
+    },
+    "files": [
+      "solution.py"
+    ]
+  },
+  "Q04_E_Voting": {
+    "title": "Q4: Encrypted e-voting with client/server and threshold tally",
+    "details": {
+      "idea": "A voter encrypts both the numeric candidate ID and a one-hot vote vector with Paillier, hashes/signs that encrypted-choice ballot, encrypts the complete ballot using AES-256-CBC, wraps its key with RSA-4096 and obtains a signed server-side timestamp. The server verifies without decrypting individual choices. After closing, at least two trustees partially decrypt each final candidate total.",
+      "walkthrough": "Use three terminal roles, all from this folder. Terminal 1: run server.py, accept a 60-minute first-run window, and set admin/auditor passwords. Login admin. Register voters V001 and V002 with separate credential passwords. Their protected files appear under storage/voter_credentials. Admin selects Listen, localhost port 6044, and 4 connections (two requests per voter). Terminal 2: run client.py, choose Cast, accept public config path, enter V001 credential path/password, choose candidate 2, constituency C01, localhost/6044. Repeat for V002 selecting candidate 1. After four requests the server returns to its menu. Search C01: two opaque ballot IDs. Close voting with CLOSE and Export tally request. Terminal 3: run trustee.py using public_config.json, tally_request.json and trustee_setup/trustee_1.json to create partials/trustee_1.json. Run it again using trustee_2.json to create a different response. On server choose Combine and enter both partial-response paths. Expected counts: candidate 1 = 1, candidate 2 = 1, candidate 3 = 0. One response alone, duplicate responses, changed partials and old-request responses must fail. Deliver private share files to separate custodians in an actual multi-machine demonstration; the server needs only public parameters after setup.",
+      "flow": [
+        "Setup: RSA-4096 for AES-key wrapping, separate timestamp RSA identity, safe-prime threshold Paillier public key and three private shares with quorum two. Register trusted ElGamal voter public keys; encrypt each voter credential with its password.",
+        "Voter converts selection into encrypted numeric ID plus one encrypted bit per candidate. Zero/one proofs, a one-hot sum witness and ID-link witness prevent malformed tallies without revealing the selected candidate.",
+        "Serialize this inner ballot, compute SHA-512 and sign the digest with ElGamal. Save the ballot file with encrypted selections.",
+        "Generate a new 32-byte AES key and 16-byte CBC IV. Encrypt the ballot and RSA-OAEP-wrap the key with the commission RSA-4096 public key. Add an HMAC covering the transport envelope.",
+        "Client requests a timestamp. The trusted local timestamp service checks the signed ballot, uses SERVER time and signs hash/ballot/voter/time. Client checks the timestamp signature.",
+        "Client submits the timestamped packet. Server checks window, envelope HMAC, SHA-512, registered voter signature, encrypted-choice proofs and replay/double-vote status before saving.",
+        "Maintain HMAC constituency and minute-bucket indexes for searches. Signed saved state authenticates index/configuration changes.",
+        "After closure, verify all ballots and aggregate candidate-bit ciphertexts. Export a signed request including the accepted encrypted ballots.",
+        "Each trustee independently verifies ballots and recomputes aggregates, then produces partial decryptions with exponent-equality proofs for only those final ciphertexts.",
+        "Combine enough different verified partials using integer Lagrange coefficients. Recover counts without reconstructing a private key or decrypting individual votes."
+      ],
+      "files": "solution.py is an optional role launcher. server.py handles commission/admin/auditor menus and TCP requests. client.py casts votes. trustee.py holds one custodian role. crypto_helpers.py holds documented function-only primitives. storage/server_keys.json has the commission/timestamp identities; public_config.json is the trusted public configuration. election.json stores signed encrypted ballots/indexes. trustee_setup/*.json are secret one-time share handoff files. voter_credentials/*.json protect voter identities. outbox/ holds encrypted-choice ballot and transport files. tally_request.json, partials/*.json and final_tally.json implement the final quorum workflow.",
+      "caveats": "This is an educational local election simulation, not a national-election deployment. RSA really uses 4096 bits, AES uses 256-bit CBC, and the hash is SHA-512. Finite-field ElGamal and Paillier use 512-bit practice parameters so setup is usable while studying; these are not production security sizes. Summing candidate IDs is ambiguous, so counts use a separately encrypted one-hot vector linked to the encrypted numeric ID. To avoid exposing choices when verifying the AES-decrypted ballot hash, the inner ballot stores Paillier ciphertext selections instead of a plaintext candidate ID. This is an explicit resolution of the prompt\u2019s otherwise conflicting privacy/verification requirements. The timestamp authority is a separately keyed logical service inside the server process using its trusted clock, not an independent network authority. Setup is a trusted dealer and creates all shares once; move shares to separate custodians for meaningful separation. The server application stores no full Paillier private key and combines proven partial decryptions, rather than Shamir-reconstructing a key. Public configuration must arrive through a trusted channel. Proofs and threshold arithmetic are included for correctness/learning; this custom protocol has not undergone a production security audit. Constituency, turnout, timing and access patterns are metadata, not fully hidden."
+    },
+    "files": [
+      "solution.py",
+      "server.py",
+      "client.py",
+      "trustee.py",
+      "crypto_helpers.py"
+    ]
+  }
+}

@@ -1,0 +1,74 @@
+Lab 1 additional Q1: Caesar brute force
+
+What the manual asks
+
+Decipher NCJAEZRCLAS/LYODEPRLYZRCLASJLCPEHZDTOPDZOLN&BY, prioritizing keys near birthday 13.
+
+Start here: the idea in plain English
+
+There are only 26 Caesar shifts. Print all possible plaintexts, starting with shifts closest to 13. A birthday is a hint, not enough evidence to choose a unique answer. Preserve punctuation so the original data is visible.
+
+How to run
+
+From this question folder, run:
+
+../../../.venv/bin/python solution.py
+
+
+The program is interactive. If you installed dependencies into another environment, use that environment's Python instead. Read Labs/README.md for setup. Paths above assume the environment is in the project root, beside Labs.
+
+Press 1 to run an exercise, enter your values or press Enter for the displayed default, and press 0 to exit. Input conversion and validation errors are printed without terminating the interactive menu. Each function can also be imported and called separately.
+
+Step-by-step solution
+
+1. Start the program and select Run. Read the displayed default inputs before changing them.
+2. Follow the input prompts. Text is encoded to bytes when required; numeric inputs are checked before cryptographic operations.
+3. Read the exercise() function below: it connects the functions in the order needed for this question.
+4. Compare the printed output with the expected result, and repeat using a different input.
+
+def exercise():
+    """Input: ciphertext and birthday hint. Print every possible Caesar decryption.
+    Output: 26 candidates, with keys nearest the hint first; inspect readable candidates.
+    """
+    text = ask_text("Ciphertext", "NCJAEZRCLAS/LYODEPRLYZRCLASJLCPEHZDTOPDZOLN&BY")
+    hint = ask_int("Birthday key hint", 13, 0, 25)
+    for key in sorted(range(26), key=lambda k: min((k - hint) % 26, (hint - k) % 26)):
+        print(f"Key {key:2}: {shift_preserving_punctuation(text,key)}")
+
+
+Follow the calls in exercise() from top to bottom. It obtains the inputs, calls the small functions that do the work, and prints intermediate values and the final result. Bytes are shown as hexadecimal when ordinary text would be unreadable. A successful round trip prints a recovered message equal to the input; verification examples also show a changed message being rejected where applicable.
+
+Every function explained
+
+ask_text(label, default)
+
+Input: a prompt and default string. Read text, or use the default when Enter is pressed.
+Output: a string. Use ask_text('Message', 'hello') to let the user choose a message.
+
+ask_int(label, default, minimum, maximum)
+
+Input: prompt, default integer, optional inclusive limits. Read and validate a number.
+Output: an integer; raise ValueError on bad input. Use for keys, counts, or amounts.
+
+shift_preserving_punctuation(text, key)
+
+Input: ciphertext and key. Subtract the key from letters and retain other symbols.
+Output: candidate plaintext. Call once for each key to brute-force Caesar.
+
+exercise()
+
+Input: ciphertext and birthday hint. Print every possible Caesar decryption.
+Output: 26 candidates, with keys nearest the hint first; inspect readable candidates.
+
+main()
+
+Input: terminal choices. Run the exercise safely.
+Output: printed results. Use python solution.py and choose a menu option.
+
+What to change during an exam
+
+Change values through the prompts first. For a different scenario, replace the example messages or record fields in exercise(), and keep the cryptographic functions. Match the requested algorithm, key size, mode, and hash exactly. Store IVs/nonces alongside ciphertext when needed. Keep private keys private. Hashing cannot be decrypted; encryption can. A hash by itself does not prove who sent a message.
+
+Notes and limitations
+
+The provided string is unusual; the program shows all candidates instead of inventing a clean plaintext or silently altering the ciphertext.

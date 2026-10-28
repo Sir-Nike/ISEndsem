@@ -1,0 +1,95 @@
+Lab 8 additional Q2: Snort intrusion detection
+
+What the manual asks
+
+Configure Snort, monitor/capture network traffic, apply rules and inspect logs for potential intrusions.
+
+Start here: the idea in plain English
+
+Snort is a network intrusion-detection application, not a Python cryptography algorithm. This wrapper creates a local UDP alert rule and a synthetic PCAP containing one ordinary packet and one packet with LAB_ATTACK. Run Snort offline against that capture, then inspect its alerts. There is also an explicit live-monitoring choice that asks for an interface. Synthetic traffic is written to a file; it is never sent on a network.
+
+How to run
+
+From this question folder, run:
+
+../../../.venv/bin/python solution.py
+
+
+The program is interactive. If you installed dependencies into another environment, use that environment's Python instead. Read Labs/README.md for setup. Paths above assume the environment is in the project root, beside Labs.
+
+Press 1 to run an exercise, enter your values or press Enter for the displayed default, and press 0 to exit. Input conversion and validation errors are printed without terminating the interactive menu. Each function can also be imported and called separately.
+
+Step-by-step solution
+
+1. Start the program and select Run. Read the displayed default inputs before changing them.
+2. Follow the input prompts. Text is encoded to bytes when required; numeric inputs are checked before cryptographic operations.
+3. Read the exercise() function below: it connects the functions in the order needed for this question.
+4. Compare the printed output with the expected result, and repeat using a different input.
+
+def exercise():
+    """Input: prepare, offline-detect or live-monitor selection. Create/use a local Snort lab.
+    Output: rule/config/PCAP and available Snort alerts. No installation or elevation is automated.
+    """
+    folder = Path(__file__).resolve().parent / "snort_lab"
+    choice = ask_text("1 Prepare only; 2 Analyze sample PCAP; 3 Monitor live interface", "1")
+    if choice == "1":
+        print("Prepared:", prepare_snort(folder))
+    elif choice == "2":
+        run_snort(folder)
+    elif choice == "3":
+        run_snort(folder, True)
+    else:
+        raise ValueError("Choose 1, 2 or 3.")
+
+
+Follow the calls in exercise() from top to bottom. It obtains the inputs, calls the small functions that do the work, and prints intermediate values and the final result. Bytes are shown as hexadecimal when ordinary text would be unreadable. A successful round trip prints a recovered message equal to the input; verification examples also show a changed message being rejected where applicable.
+
+Every function explained
+
+ask_text(label, default)
+
+Input: a prompt and default string. Read text, or use the default when Enter is pressed.
+Output: a string. Use ask_text('Message', 'hello') to let the user choose a message.
+
+checksum(data)
+
+Input: bytes. Compute the Internet one's-complement checksum for an IPv4 header.
+Output: 16-bit integer. Used when constructing the synthetic capture.
+
+udp_packet(payload)
+
+Input: UDP payload bytes. Build Ethernet, IPv4 and UDP headers using reserved test addresses.
+Output: one raw Ethernet frame. This function writes bytes only; it sends no packets.
+
+write_capture(path)
+
+Input: output PCAP path. Save two synthetic UDP frames with valid IPv4 checksums.
+Output: PCAP file, containing ordinary traffic and a known rule-triggering payload.
+
+prepare_snort(folder)
+
+Input: exercise output directory. Write a minimal rule/configuration and sample capture.
+Output: paths for rule, Snort 2 config, capture and log directory.
+
+run_snort(folder, live)
+
+Input: output directory and live/offline flag. Select Snort 2 or 3 command syntax.
+Output: stdout/stderr and alert files. Live mode asks for an interface and runs for 20 seconds.
+
+exercise()
+
+Input: prepare, offline-detect or live-monitor selection. Create/use a local Snort lab.
+Output: rule/config/PCAP and available Snort alerts. No installation or elevation is automated.
+
+main()
+
+Input: terminal choices. Run the exercise safely.
+Output: printed results. Use python solution.py and choose a menu option.
+
+What to change during an exam
+
+Change values through the prompts first. For a different scenario, replace the example messages or record fields in exercise(), and keep the cryptographic functions. Match the requested algorithm, key size, mode, and hash exactly. Store IVs/nonces alongside ciphertext when needed. Keep private keys private. Hashing cannot be decrypted; encryption can. A hash by itself does not prove who sent a message.
+
+Notes and limitations
+
+Requires the separate Snort executable and a compatible local installation/configuration. Offline analysis needs no live capture privileges. Live monitoring may require OS capture permissions and reports setup errors; it never runs sudo automatically. The sample rule is a known demonstration marker, not evidence that an arbitrary real packet is malicious. Snort itself is unavailable in this workspace, so actual Snort alert generation must be checked where it is installed.

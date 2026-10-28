@@ -1,0 +1,142 @@
+Lab 7 additional 1d: Paillier and ElGamal benchmarking
+
+What the manual asks
+
+Compare performance of Paillier and ElGamal for their supported homomorphic operations.
+
+Start here: the idea in plain English
+
+Time key generation separately, then measure encryption of two integers, their homomorphic operation, and decryption of the aggregate. Paillier computes a sum; ElGamal computes a product. They are different operations, so the table compares implementation costs rather than interchangeable functionality. Use the same modulus bit target and average several repetitions.
+
+How to run
+
+From this question folder, run:
+
+../../../.venv/bin/python solution.py
+
+
+The program is interactive. If you installed dependencies into another environment, use that environment's Python instead. Read Labs/README.md for setup. Paths above assume the environment is in the project root, beside Labs.
+
+Press 1 to run an exercise, enter your values or press Enter for the displayed default, and press 0 to exit. Input conversion and validation errors are printed without terminating the interactive menu. Each function can also be imported and called separately.
+
+Step-by-step solution
+
+1. Start the program and select Run. Read the displayed default inputs before changing them.
+2. Follow the input prompts. Text is encoded to bytes when required; numeric inputs are checked before cryptographic operations.
+3. Read the exercise() function below: it connects the functions in the order needed for this question.
+4. Compare the printed output with the expected result, and repeat using a different input.
+
+def exercise():
+    """Input: modulus size and repetition count. Benchmark valid additive/multiplicative computations.
+    Output: per-scheme keygen and average encryption, aggregation and aggregate-decryption times.
+    """
+    bits = ask_int("Demo modulus bits", 256, 128, 2048)
+    repeats = ask_int("Repetitions", 10, 1, 1000)
+    for scheme in ("Paillier", "ElGamal"):
+        start = time.perf_counter()
+        public, private = paillier_keys(bits) if scheme == "Paillier" else elgamal_keys(bits)
+        generation = time.perf_counter() - start
+        totals = [0.0, 0.0, 0.0]
+        for _ in range(repeats):
+            start = time.perf_counter()
+            encrypted = [
+                (
+                    paillier_encrypt(public, value)
+                    if scheme == "Paillier"
+                    else elgamal_encrypt(public, value)
+                )
+                for value in (15, 25)
+            ]
+            totals[0] += time.perf_counter() - start
+            start = time.perf_counter()
+            if scheme == "Paillier":
+                combined = encrypted_sum(public, encrypted)
+            else:
+                combined = (
+                    encrypted[0][0] * encrypted[1][0] % public["p"],
+                    encrypted[0][1] * encrypted[1][1] % public["p"],
+                )
+            totals[1] += time.perf_counter() - start
+            start = time.perf_counter()
+            result = (
+                paillier_decrypt(public, private, combined)
+                if scheme == "Paillier"
+                else elgamal_decrypt(public, private, combined)
+            )
+            totals[2] += time.perf_counter() - start
+            assert result == (40 if scheme == "Paillier" else 375)
+        print(
+            scheme,
+            "keygen s:",
+            generation,
+            "mean seconds [encrypt pair, aggregate, decrypt]:",
+            [v / repeats for v in totals],
+        )
+
+
+Follow the calls in exercise() from top to bottom. It obtains the inputs, calls the small functions that do the work, and prints intermediate values and the final result. Bytes are shown as hexadecimal when ordinary text would be unreadable. A successful round trip prints a recovered message equal to the input; verification examples also show a changed message being rejected where applicable.
+
+Every function explained
+
+ask_text(label, default)
+
+Input: a prompt and default string. Read text, or use the default when Enter is pressed.
+Output: a string. Use ask_text('Message', 'hello') to let the user choose a message.
+
+ask_int(label, default, minimum, maximum)
+
+Input: prompt, default integer, optional inclusive limits. Read and validate a number.
+Output: an integer; raise ValueError on bad input. Use for keys, counts, or amounts.
+
+elgamal_keys(bits)
+
+Input: demonstration modulus bit size. Generate safe prime p=2q+1 and subgroup generator.
+Output: (public dictionary p,g,y; private x). Use 2048+ bits for serious parameters.
+
+elgamal_encrypt(public, message)
+
+Input: ElGamal public parameters and integer 1<=message<p. Randomize and encrypt.
+Output: pair (g^k mod p, message*y^k mod p). Use fresh k for every encryption.
+
+elgamal_decrypt(public, private, ciphertext)
+
+Input: public parameters, private exponent and ciphertext pair. Remove the shared mask.
+Output: original integer. Multiply c2 by the modular inverse of c1^private.
+
+paillier_keys(bits)
+
+Input: desired modulus size. Generate p/q and compute Paillier parameters with g=n+1.
+Output: (public dictionary n/g, private dictionary lambda/mu). Keep private values secret.
+
+paillier_encrypt(public, message)
+
+Input: public n/g and integer 0<=message<n. Choose fresh random r coprime to n.
+Output: ciphertext g^message * r^n modulo n^2. Same message encrypts differently each time.
+
+paillier_decrypt(public, private, ciphertext)
+
+Input: matching public/private keys and valid ciphertext. Apply L(c^lambda)*mu modulo n.
+Output: plaintext integer modulo n. L(u) means (u-1)//n.
+
+encrypted_sum(public, ciphertexts)
+
+Input: public key and iterable of Paillier ciphertexts. Multiply modulo n^2.
+Output: encryption of the sum modulo n. No individual plaintext or private key is needed.
+
+exercise()
+
+Input: modulus size and repetition count. Benchmark valid additive/multiplicative computations.
+Output: per-scheme keygen and average encryption, aggregation and aggregate-decryption times.
+
+main()
+
+Input: terminal choices. Run the exercise safely.
+Output: printed results. Use python solution.py and choose a menu option.
+
+What to change during an exam
+
+Change values through the prompts first. For a different scenario, replace the example messages or record fields in exercise(), and keep the cryptographic functions. Match the requested algorithm, key size, mode, and hash exactly. Store IVs/nonces alongside ciphertext when needed. Keep private keys private. Hashing cannot be decrypted; encryption can. A hash by itself does not prove who sent a message.
+
+Notes and limitations
+
+Safe-prime ElGamal key generation can take longer and varies by run. This benchmark uses small teaching parameters and checks the decrypted result each time. Equal modulus sizes do not imply equal security or equivalent supported operations.

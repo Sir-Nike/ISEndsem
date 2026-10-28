@@ -1,0 +1,562 @@
+# Skeleton 4: local encrypted records, Paillier totals and keyword search
+
+## Start here
+
+This extends Skeleton 3 with encrypted numeric amounts, HMAC keyword lookup and a finance role. It is one self-contained function-based Python program. There are no sockets, user-defined classes, hidden password prompts or command-line options. All runtime storage is separate .txt files. Existing Skeleton 1–3 files and data are unchanged; Skeleton 4 initializes its own practice_data.
+
+From the project root:
+
+```bash
+.venv/bin/python -m pip install -r skeleton/Skeleton_4/requirements.txt
+.venv/bin/python skeleton/Skeleton_4/skeleton.py
+```
+
+The first run asks for an admin password, creates keys and initializes storage. Later runs load the same accounts, keys, records and index. Password prompts use normal input(), so typing is visible. The first Paillier key generation can take a moment.
+
+## Libraries and algorithms
+
+| Operation | Implementation |
+| --- | --- |
+| Description encryption | Crypto.Cipher.AES, AES-256-GCM |
+| AES-key wrapping | Crypto.PublicKey.RSA and Crypto.Cipher.PKCS1_OAEP, RSA-2048/OAEP/SHA-256 |
+| Record hash | Crypto.Hash.SHA256 |
+| Sender key generation | Crypto.PublicKey.ElGamal.generate |
+| Record signature | Textbook ElGamal/SHA-256 functions; PyCryptodome public sign() is unimplemented |
+| Encrypted amount and sum | phe.paillier public API, 2048-bit Paillier modulus |
+| Keyword tokens | Crypto.Hash.HMAC with SHA256 under a separate random key |
+| Account password verifier | Crypto.Protocol.KDF.scrypt |
+| Signed account/catalog/index/audit | Separate application RSA-PSS/SHA-256 key |
+
+PyCryptodome has no public Paillier implementation, so this version uses the relevant python-paillier library (phe) rather than writing Paillier mathematics manually. [The library API](https://python-paillier.readthedocs.io/en/latest/phe.html) documents key generation, encrypted-number addition and ciphertext/exponent serialization.
+
+ElGamal remains a 256-bit safe-prime practice group for fast lab use, not a production size. Change its generator call to the exam-required size before creating identities. Paillier defaults to 2048 bits. These modulus sizes are separate settings, not equivalent security levels.
+
+## Full worked run
+
+1. Run the program and choose your first admin password (at least eight characters). Choose Login and use username admin.
+2. Manage users -> Create user. Create alice as sender, bob as receiver, reviewer as reviewer, and finance as finance. Choose your own passwords. Each account creation returns to the admin menu; choose Manage users again for another account.
+3. Log out and log in as bob once. His RSA pair is generated locally and the public half registered automatically. Log out. Have every intended receiver do this before a sender addresses records to them.
+4. Log in as alice. Her ElGamal pair is generated automatically. Choose Enter and save record, then enter bob, R001, CSE, Lab equipment purchase, and amount 100.
+5. Save a second record: bob, R002, CSE, Equipment maintenance, amount 250. Both records persist, with different randomized ciphertexts. Do not reuse an ID.
+6. Log in as reviewer. Choose Search by keyword and type EQUIPMENT. Both IDs should appear without decrypting either description or amount. Choose Verify record to check R001.
+7. Log in as bob. Search equipment, then choose Verify and decrypt description for R001. It prints Lab equipment purchase. It does not decrypt the amount.
+8. Log in as finance. Search equipment if desired. Choose Verify and calculate encrypted total and enter R001,R002. It verifies both, adds their encrypted amounts, decrypts the aggregate once and prints total 350.
+9. Log in as admin. Tamper with a practice record -> R001 -> amount, tokens or index. The copied data should fail its integrity check. Verify/search the live original afterward: it remains valid.
+10. View logs and verify audit. Log out/exit and restart: accounts, identities, records and postings remain. Session tokens do not survive restart.
+
+## The menus, including explicit search
+
+```text
+Main
+  1 Login
+  0 Exit
+
+Sender
+  1 Enter and save record
+  2 View my submissions
+  0 Logout
+
+Reviewer
+  1 View records
+  2 Search by keyword
+  3 Verify record
+  0 Logout
+
+Receiver
+  1 View received records
+  2 Search by keyword
+  3 Verify and decrypt description
+  0 Logout
+
+Finance
+  1 View permitted records
+  2 Search by keyword
+  3 Verify and calculate encrypted total
+  0 Logout
+
+Admin
+  1 Manage users
+  2 View logs and verify audit
+  3 Tamper with a practice record
+  0 Logout
+```
+
+Manage users supports create, disable and list. Permissions are checked inside each high-level function as well as by the menu. The finance role can aggregate and inspect metadata, but cannot decrypt descriptions. A receiver can decrypt only records addressed to it. Sender listing is limited to that sender's submissions. Reviewer/admin/finance have global metadata visibility in this example; finance department scopes are not implemented.
+
+## 1. Application setup and identity setup
+
+Setup creates the admin account, application RSA audit/storage identity, Paillier pair and independent HMAC search key. Users/catalog/index/audit and key parameter files are signed using the application key. Private factors and search key are in owner-only .txt files, separate from record artifacts.
+
+The Paillier public file contains n. The private file contains factors p and q. Load_Extensions loads only the public key and search secret at startup; the Paillier private file is opened only when the finance aggregate is decrypted. The application can verify/search encrypted records while the Paillier private file is unavailable.
+
+Sender and receiver pairs are created on their first login by Ensure_User_Keys and bound to their usernames in signed account storage. Existing keys are reused. An already registered identity with a missing private key must restore it rather than silently replace it. The receiver public key must exist before a sender can save a record for that receiver.
+
+Login uses a salted scrypt verifier and gives an opaque 30-minute session token. Require resolves the current enabled role from signed users.txt; it never trusts a caller-provided role. Logout removes the token; disabling an account invalidates its active sessions. Passwords, tokens and private values are excluded from logs/audit.
+
+## 2. Enter, encrypt and save a record
+
+Save_Message takes sender session, recipient, unique record ID, department, description and integer amount. It validates required fields and existing index integrity, loads the registered public keys and sender private signing key, then calls Create_Packet.
+
+```text
+Description bytes -> fresh AES-256 key/nonce -> AES-GCM ciphertext/tag
+AES key -> receiver RSA public key -> wrapped AES key
+Amount -> Paillier public key -> randomized encrypted amount
+Description -> casefold/tokenize/deduplicate -> HMAC tokens
+    ↓
+Package with metadata + both encrypted fields + tokens + key bindings
+    ↓
+Canonical bytes -> SHA-256 hash and sender ElGamal signature
+    ↓
+Validate packet -> separate .txt artifacts -> signed catalog/index -> signed audit
+```
+
+Metadata includes ID, sender, recipient, department, version, algorithm labels and RSA/ElGamal fingerprints. It is GCM AAD and is visible. The amount descriptor separately includes a Paillier key fingerprint. All these fields and the token list are covered by the sender signature and SHA-256 hash. The complete packet digest, including signature/hash, is then bound into the application-signed catalog.
+
+Plaintext descriptions, integer amounts and keyword lists are not written to storage. Only a sender's latest AES key is saved separately in its private identity directory, preserving the requested skeleton workflow; receivers recover their AES key from the wrapped key stored per record.
+
+Amounts must be actual nonnegative Python integers, at most MAX_AMOUNT (10^12). Decimals/negative values/booleans are rejected. For monetary decimals, convert to integer smallest units before encryption, then format the final integer total accordingly. All stored phe exponents are zero; this skeleton does not mix floating-point encodings.
+
+## 3. Search without decryption
+
+Keywords casefolds descriptions, splits alphanumeric words, and removes duplicates. For example Equipment, EQUIPMENT and equipment! produce the same word equipment. Generate_Search_Token computes HMAC-SHA256 with a separate random key and a fixed domain label. A bare SHA hash of a word is not used as the search token.
+
+The signed index maps token -> record ID list. Each record has a signed token list, so Verify_Index checks the index signature, key binding and exact posting consistency against all signed records. It reads encrypted records and token lists; it never calls Decrypt or Paillier_Decrypt. It intentionally scans/validates record integrity, so this is not a performance-optimized index.
+
+Search authenticates the role, normalizes one entered keyword, verifies the index, looks up the HMAC token, filters IDs using record access permissions and returns only permitted ID/sender/recipient/department metadata. The query word itself is not recorded in audit; the event records the number of permitted matches. A miss returns an empty list. Enter one word; this is exact normalized word search, not phrase/fuzzy/substring matching.
+
+Receivers see only their addressed matches. Reviewer and finance can search all records in this example. A search does not decrypt any description, whether matching or nonmatching. Signed index corruption causes refusal and an INDEX_TAMPER_DETECTED event rather than silently trusting incomplete results.
+
+## 4. Verify a record
+
+Verify_Record checks access, then Check_Stored reads each text artifact and verifies registered sender/receiver identities, metadata, ElGamal signature, SHA-256 and catalog binding. Verify_Packet also validates the Paillier key ID/ciphertext group/exponent and token formatting. Changes to amount or tokens are detected because they are signed, even if an attacker recomputes the separate unkeyed hash.
+
+These checks show integrity/authenticity of a submitted encrypted amount, not a cryptographic range proof of its hidden plaintext. Honest inputs are range-checked by Save_Message/Paillier_Encrypt. An adversarial user who controls the process/signing key is outside that input-validation assumption.
+
+## 5. Receiver decrypts only the description
+
+Decrypt_Record checks receiver role and recipient ownership, then verifies all signed record fields before reading the receiver private key. Decrypt_Key unwraps the AES key using RSA-OAEP, and Decrypt checks the GCM tag with the same metadata AAD. Only authenticated description bytes are decoded/printed. The function does not read the sender private key, sender saved AES key or Paillier private key. It never saves recovered description/AES key.
+
+Because decryption happens inside this local application, DECRYPT_OK/DECRYPT_REJECTED events describe the actual local result. Finance/reviewer/admin have no permission to call the description-decryption endpoint.
+
+## 6. Finance calculates only a final total
+
+Aggregate_Total checks finance permission, requires nonempty distinct IDs and verifies each selected record, its metadata/key bindings and catalog digest. It checks a worst-case bound based on MAX_AMOUNT and the count against phe's max_int to prevent honest sums overflowing the signed encoding range.
+
+Paillier_Add rebuilds public EncryptedNumber values and adds them using the library. Mathematically it multiplies ciphertexts modulo n^2, encrypting the sum of their plaintext amounts. The result is re-randomized when its ciphertext is exported. No private key is used during this addition.
+
+Only after constructing that aggregate does Aggregate_Total call Paillier_Decrypt once. It verifies the signed private-factor file, reconstructs the matching library private key, and decrypts the final aggregate. The response contains selected IDs, encrypted aggregate and total; the audit records IDs/count, not the individual plaintext amounts.
+
+There is no bulk amount/description decryption and no single-record amount-display endpoint. However selecting one ID yields that amount as a total, and overlapping aggregate queries can reveal individual values by subtraction. This teaching workflow does not enforce minimum cohort/query-budget privacy or threshold decryption. Those are separate policy/protocol additions.
+
+## 7. Logging, audit and tamper checks
+
+activity_log.txt is an unsigned diagnostic log of actors, operations, record IDs and error categories. audit.txt is an application-signed snapshot of hash-chained sequence/time/actor/action/details events. Audit_Read verifies its signature and every sequence/previous-hash link. Credentials, private/AES keys, plaintext descriptions, plaintext amounts and raw query words are not logged.
+
+Admin Tamper_Test copies data into tamper_practice/<ID>/ and changes a target without repairing signatures. Existing targets are ciphertext, nonce, tag, encrypted_key, metadata, public_key, signature, hash and audit. New targets:
+
+- amount: replace the encrypted numeric ciphertext.
+- tokens: remove the record's signed keyword tokens.
+- index: clear postings in a copied signed index.
+
+Record copies should show overall=False. Audit/index copies return audit_valid=False or index_valid=False. The original remains untouched and the exercise is audited. Live amount/index edits in a temporary fixture cause verification/search/aggregation refusal and audit detection. A failed selected record is rejected before any aggregate decryption.
+
+Signatures make local storage tamper-evident under a protected application key. They do not stop complete rollback to an older valid set of all signed files or protect against the OS user modifying process memory and private keys. Audit times use the local clock rather than an external timestamp authority.
+
+## All runtime storage is .txt
+
+```text
+practice_data/
+  signing_private_key.txt           application RSA audit/storage private key
+  signing_public_key.txt
+  paillier_public_key.txt           signed n
+  paillier_private_key.txt          signed private p,q; owner-only
+  search_key.txt                   signed private HMAC key; owner-only
+  users.txt                        signed accounts/verifiers/public registrations
+  catalog.txt                      signed ID/recipient/department/packet-digest index
+  index.txt                        signed HMAC-token postings and search-key binding
+  audit.txt                        signed hash-chained events
+  activity_log.txt                 operational diagnostics
+  identities/<username>/
+    private_key.txt                 ElGamal sender or RSA receiver private key
+    public_key.txt
+    symmetric_key.txt               sender's latest AES key only
+  records/<ID>/
+    ciphertext.txt
+    nonce.txt
+    tag.txt
+    encrypted_key.txt
+    metadata.txt
+    sender_public.txt
+    receiver_public.txt
+    encrypted_amount.txt            Paillier ciphertext/exponent/key ID
+    search_tokens.txt               opaque HMAC token list
+    signature.txt
+    hash.txt
+  tamper_practice/<ID>/              copied artifacts/audit_copy.txt/index_copy.txt
+```
+
+Signed JSON payloads, integer ciphertext strings, hex and PEM are text saved with .txt extensions. Text encodings are not encryption. Private files are unencrypted, owner-only teaching files; roles enforce application operations, not isolation from someone controlling the same OS account. There is no mutually isolated finance process. Use OS/account separation for stronger secret isolation.
+
+## Replacing functions in the exam
+
+All code is in skeleton.py. Start at Save_Message, Search, Decrypt_Record and Aggregate_Total, then read the smaller functions they call.
+
+- Encrypt/Decrypt, Encrypt_Key/Decrypt_Key, DS_Sign/DS_Verify and Hash_Generate/Hash_Check retain the earlier skeleton pattern.
+- Paillier_Keygen/Paillier_Encrypt/Paillier_Add/Paillier_Decrypt isolate numeric encryption. Amount_Read/Amount_Write isolate serialization.
+- Keywords/Generate_Search_Token/Update_Index/Verify_Index/Search isolate keyword indexing and lookup.
+- Changes to algorithms must also update Metadata labels, registration, key serialization and artifact read/write fields. Hash/sign exactly the same canonical bytes on both sides.
+
+The program has no sockets or hidden password prompts. It does not add record-key expiry, external trusted timestamps, threshold decryption, password recovery, key rotation or transactional database concurrency. Signed snapshots are replaced atomically one file at a time; records/catalog/index/audit are not one transaction. Interrupted writes can require restoring trusted backups. Run one instance per practice_data directory.
+
+HMAC search protects keyword tokens with a secret, but reveals equality, token/document frequency and access patterns. Public department/record IDs are metadata, not encrypted fields. The search-token list is created by the honest application from the entered description; signatures alone do not prove a malicious sender indexed every word correctly.
+
+## Every function: input, operation, output and usage
+
+### `Canonical(value)`
+
+Input: JSON-compatible value. Sort keys and encode consistently as UTF-8.
+Output: bytes. Use Canonical(package) identically before hashing, signing and verification.
+
+### `Write_Text(path, text, private=False)`
+
+Input: destination Path, text str and private flag. Save a UTF-8 .txt file.
+Output: None. Private files get owner-only permissions; public artifacts use normal permissions.
+Use Write_Text(STORE / 'identities/alice/private_key.txt', json_text, True).
+
+### `Read_Text(path)`
+
+Input: text-file Path. Read UTF-8 without changing its contents. Output: str or file error.
+
+### `Generate_Receiver_Keys(bits=2048)`
+
+Input: RSA modulus bits, default 2048. Generate matching receiver private/public keys together.
+Output: (private PEM str, public PEM str). Use the public key to wrap AES, private to unwrap.
+
+### `Generate_Sender_Keys(bits=256)`
+
+Input: ElGamal modulus bits, default 256 for quick practice (not a production size).
+Let Crypto.PublicKey.ElGamal.generate create p,g,x,y using secure random bytes.
+Output: (private dict {p,g,x}, public dict {p,g,y}); int() makes library values JSON-compatible.
+Use Generate_Sender_Keys(2048) when the exam requires a larger modulus.
+
+### `Generate_Symmetric_Key()`
+
+Input: none. Generate fresh 32 random bytes. Output: AES-256 key bytes; use once per message.
+
+### `Encrypt(plaintext, key, aad)`
+
+Input: plaintext bytes, AES key bytes and metadata bytes as AAD.
+Encrypt using AES-256-GCM with fresh 12-byte nonce. Output: hex dict ciphertext/nonce/tag.
+Use Encrypt(text.encode(), key, Canonical(metadata)); caller saves all three outputs.
+
+### `Decrypt(envelope, key, aad)`
+
+Input: hex envelope dict, recovered AES key, identical metadata bytes.
+Verify GCM tag and decrypt. Output: authenticated plaintext bytes; ValueError on altered data.
+Never return a plaintext obtained without the tag check.
+
+### `Encrypt_Key(key, receiver_public)`
+
+Input: AES key bytes and receiver public PEM str. RSA-OAEP/SHA-256 encrypt only that key.
+Output: encrypted key hex str. Use Encrypt_Key(key, receiver_public); not for encrypting files.
+
+### `Decrypt_Key(encrypted_key, receiver_private)`
+
+Input: encrypted key hex str and matching receiver private PEM str.
+RSA-OAEP/SHA-256 unwraps AES key. Output: original key bytes or ValueError on failure.
+
+### `DS_Sign(data, private)`
+
+Input: canonical package bytes and ElGamal private dict {p,g,x}.
+Public ElGamal.sign() is unimplemented; apply the signature equations here.
+Hash bytes with SHA-256; choose fresh k coprime to p-1; compute r=g^k, s=(h-x*r)/k mod p-1.
+Output: dict {r,s}. Never reuse k. Use DS_Sign(Canonical(package), sender_private).
+
+### `DS_Verify(data, signature, public)`
+
+Input: package bytes, signature {r,s}, trusted public dict {p,g,y}.
+Compare g^SHA256(data) with y^r*r^s modulo p. Output: bool; no private key/plaintext needed.
+
+### `Hash_Generate(data)`
+
+Input: bytes. Calculate SHA-256. Output: 64-character hex digest str; use on canonical package.
+
+### `Hash_Check(data, expected)`
+
+Input: package bytes and saved hex digest. Recompute and compare. Output: bool.
+A hash alone does not authenticate data; signature verification must also succeed.
+
+### `Public_Fingerprint(public, kind)`
+
+Input: public ElGamal dict or RSA PEM, and 'sender'/'receiver'. Output: SHA-256 identifier.
+RSA is normalized to DER; ElGamal uses sorted JSON. Private values must never be passed here.
+
+### `Metadata(record_id, sender, receiver, sender_public, receiver_public, department)`
+
+Input: ID, two usernames and registered public keys. Output: immutable public metadata dict.
+Its identities/algorithm labels/fingerprints are covered by the signature and GCM AAD.
+
+### `Create_Packet(text, record_id, sender, receiver, sender_private, sender_public, receiver_public, department, amount)`
+
+Input: description/IDs/keys, department and integer amount. Output: (signed packet,AES key).
+Encrypt description with AES/RSA and amount with Paillier; sign/hash all fields including HMAC tokens.
+
+### `Verify_Packet(packet, sender_public, receiver_public)`
+
+Input: packet plus independently trusted sender/receiver public keys. Output: boolean checks.
+Verify identities/metadata/signature/hash; malformed artifacts yield overall=False, never plaintext.
+
+### `Save_Packet(packet, folder)`
+
+Input: packet and destination Path. Output: None. Save each artifact separately in .txt files.
+Contains encrypted/public data, including Paillier amount and signed HMAC tokens; never plaintext.
+
+### `Read_Packet(folder)`
+
+Input: artifact folder Path. Output: reconstructed packet; missing/malformed files raise errors.
+
+### `Atomic_Text(path, text, private=True)`
+
+Input: .txt Path, text and private flag. Write temporary .txt file then replace target.
+Output: None. Protects a single file from partial writes; program handles one operation at a time.
+
+### `Root_Sign(value)`
+
+Input: JSON value. Sign canonical bytes with application audit/storage RSA-PSS/SHA-256 key.
+Output: hex signature str. This application key is separate from sender ElGamal/receiver RSA keys.
+
+### `Root_Verify(value, signature)`
+
+Input: JSON value and hex signature. Verify against loaded application root public key.
+Output: bool; altered user roles, catalog or audit snapshots cannot be accepted.
+
+### `Signed_Save(name, payload)`
+
+Input: fixed application .txt filename and JSON payload. Sign and atomically save. Output: None.
+
+### `Signed_Read(path)`
+
+Input: signed .txt Path. Verify snapshot signature before use. Output: payload or ValueError.
+
+### `Audit_Read(path=None)`
+
+Input: optional audit-copy Path. Verify snapshot and every sequence/hash-chain link.
+Output: event list. Alteration/reordering/tail deletion fails unless an old whole signed snapshot is replayed.
+
+### `Audit(actor, action, details)`
+
+Input: actor, event name and non-secret details. Append timestamped event and sign snapshot.
+Output: None. Never include passwords, session tokens, plaintext or private/AES keys.
+
+### `Password_Verifier(password, salt)`
+
+Input: password str and salt hex. Run scrypt N=16384,r=8,p=1. Output: hex verifier, never password.
+
+### `Credential(password, role)`
+
+Input: password >=8 characters and recognized role. Output: salted credential/public-key entry.
+
+### `Setup(admin_password)`
+
+Input: first admin login password, at least eight characters. First run only.
+Create application signing keys, Paillier pair, HMAC key and signed users/catalog/index/audit .txt files.
+Output: None. Private Paillier factors are saved separately from public parameters.
+The application's private signing key is an owner-only local teaching file; no extra unlock password.
+
+### `Load_State()`
+
+Input: none. Load existing application signing key, validate matching public key and signed files.
+Output: None. Load public Paillier/HMAC state and verify index consistency; accounts/records persist.
+Old login tokens are cleared on restart; Paillier private factors are not loaded here.
+
+### `Configure_Logging()`
+
+Input: none. Attach local operational .txt log handler once. Output: None; excludes passwords and plaintext.
+
+### `Login(username, password)`
+
+Input: credentials entered at login. Verify signed users DB and scrypt; throttle repeated failures.
+Output: token, role, username; token exists only in program memory and expires after 30 minutes.
+
+### `Require(token, permission=None)`
+
+Input: opaque token and required permission. Resolve current enabled account and role inside the program.
+Output: (username,user). Raise on missing/expired session, disabled account or unauthorized operation.
+
+### `Manage_User(token, username, password=None, role=None, disable=False)`
+
+Input: admin token and target username; create with password/role or disable=True.
+Output: None. Signed role storage prevents raw edits; disabling invalidates target's sessions.
+
+### `Register_Key(token, public)`
+
+Input: sender/receiver session and public key only. Bind first key to authenticated identity.
+Output: fingerprint. Existing keys cannot be silently replaced; private values are rejected.
+
+### `Receiver_Key(token, receiver)`
+
+Input: sender session and receiver username. Output: registered enabled receiver's public RSA PEM.
+
+### `Catalog(actor)`
+
+Input: actor name. Verify signed manifest that binds IDs, recipients and complete packet digests.
+Output: catalog dict; audit detection/refuse if modified. Never trust folder names alone.
+
+### `Can_Access(username, user, entry)`
+
+Input: authenticated name/user and catalog entry. Output: bool for record-level visibility.
+
+### `Get_Entry(token, record_id, permission)`
+
+Input: session, record ID and permission. Enforce role plus record ownership. Output: (actor,entry).
+
+### `Check_Stored(record_id, entry, folder=None)`
+
+Input: ID, signed catalog entry, optional practice-copy folder. Output: verification dictionary.
+Bind packet digest and metadata to manifest and currently registered public keys; catch corrupt files.
+
+### `Submit(token, packet)`
+
+Input: sender session and encrypted/public packet. Validate identity, keys, signatures and ID.
+Output: accepted record ID. Store .txt artifacts under a unique ID; no plaintext is stored with public artifacts.
+
+### `List_Records(token)`
+
+Input: authenticated session. Output: visible IDs, metadata summary and integrity status.
+Senders see own records; receivers addressed records; admin/reviewer/finance see all, never plaintext.
+
+### `Verify_Record(token, record_id)`
+
+Input: authorized session and ID. Output: all public integrity checks; audit any detected tampering.
+
+### `Tamper_Test(token, record_id, target)`
+
+Input: admin session, existing ID, target artifact or 'audit'. Modify only a practice copy.
+Output: expected rejection checks. Never re-sign the changed copy or damage the live original.
+
+### `Audit_Report(token)`
+
+Input: admin session. Output: verified audit snapshot and last 100 operational log lines.
+Operational logs are diagnostic, not signed; the signed audit is the integrity-protected record.
+
+### `User_Folder(username)`
+
+Input: account username. Validate safe characters. Output: local identity directory Path.
+A username cannot select an arbitrary disk path; only letters/digits/underscore are accepted.
+
+### `Ensure_User_Keys(token)`
+
+Input: sender/receiver login token. Generate/load that user's matching key pair and register public.
+Output: public key. First login creates sender ElGamal or receiver RSA keys in separate .txt files.
+Existing registered keys with missing private files must be restored, never silently replaced.
+
+### `Save_Message(token, receiver, record_id, department, description, amount)`
+
+Input: sender token, receiver, unique ID, department, secret description, nonnegative int amount.
+Output: acceptance dict. Encrypt all sensitive fields, create tokens, sign/store/catalog/index/audit.
+
+### `Decrypt_Record(token, record_id)`
+
+Input: receiver login token and addressed record ID. Check ownership/hash/signature/metadata.
+Output: plaintext str after RSA key unwrapping and GCM authentication; no plaintext is stored.
+Refuse unauthorized/tampered records; audit successful decryption or cryptographic rejection.
+
+### `Logout(token)`
+
+Input: active login token. Remove session and audit logout. Output: None; old token stops working.
+
+### `Manage_Users(token)`
+
+Input: admin token and submenu input. Create/disable/list users using guarded functions.
+Output: printed results; roles and password verifiers remain in signed users.txt.
+
+### `Role_Menu(token)`
+
+Input: login token/menu choices. Explicit search options for reviewer/receiver/finance.
+Output: None; call guarded local functions. All prompts use normal input(); no sockets.
+
+### `Menu()`
+
+Input: first-run admin password, later login credentials and role choices. Output: None.
+Create/load persistent state, log in, auto-create account keys if needed, then open role menu.
+No sockets, separate processes, manual crypto menus or command-line flags are involved.
+
+### `Paillier_Keygen(bits=2048)`
+
+Input: modulus bits, default 2048. Use phe's public key-generation API.
+Output: (public dict {n}, private dict {p,q}); decimal strings are safe to store in .txt JSON.
+
+### `Paillier_Public()`
+
+Input: none. Return the public library key loaded at startup. Output: PaillierPublicKey.
+Does not load private factors; needed for encryption and encrypted arithmetic only.
+
+### `Paillier_Key_ID()`
+
+Input: none. Hash public modulus. Output: fingerprint str binding amounts to the active key.
+
+### `Amount_Read(value)`
+
+Input: encrypted amount dict. Validate key ID, exponent and ciphertext group before rebuilding.
+Output: phe EncryptedNumber; no decryption. Integer amounts must have exponent zero.
+
+### `Amount_Write(value)`
+
+Input: library EncryptedNumber. Output: text-safe ciphertext/exponent/key-ID dict.
+ciphertext() uses library re-randomization before exposing homomorphic results.
+
+### `Paillier_Encrypt(amount)`
+
+Input: int amount from zero through MAX_AMOUNT. Encrypt with fresh library randomness.
+Output: encrypted amount dict. No plaintext amount is stored in the record or audit.
+
+### `Paillier_Add(amounts)`
+
+Input: nonempty list of encrypted amount dicts with same key. Add library encrypted values.
+Output: encrypted aggregate dict. This is ciphertext multiplication mod n^2; never decrypts inputs.
+
+### `Paillier_Decrypt(encrypted_total)`
+
+Input: aggregate amount dict. Load signed private factors only inside finance aggregation.
+Output: integer total. Internal primitive; Aggregate_Total enforces role before calling it once.
+
+### `Keywords(description)`
+
+Input: description str. Casefold and split alphanumeric words; remove duplicates.
+Output: sorted normalized keyword list, only kept temporarily during record creation/search.
+
+### `Generate_Search_Token(keyword)`
+
+Input: one normalized keyword. HMAC-SHA256 under the independent search secret.
+Output: hex token for exact keyword matching. Use through authenticated Search, never return key.
+
+### `Search_Key_ID()`
+
+Input: none. Fingerprint random search key to bind the signed index to it. Output: hex str.
+
+### `Load_Extensions()`
+
+Input: none. Verify/load public Paillier parameters and signed private HMAC-key file.
+Output: None; startup state gains public key and search key, not Paillier private factors.
+
+### `Update_Index(record_id, tokens)`
+
+Input: newly stored record ID and signed token list. Add token-to-ID postings and sign index.
+Output: None. Internal persistence helper called after Submit validates the complete record.
+
+### `Verify_Index(actor)`
+
+Input: authenticated actor name for audit. Check signed index and rebuild postings from signed
+record token lists without decrypting descriptions. Output: verified index; refuse corruption.
+
+### `Search(token, keyword)`
+
+Input: reviewer/receiver/finance session and one keyword. Validate index, generate HMAC token,
+find IDs, filter by role/recipient and return metadata. Output: list; no description/amount decryption.
+
+### `Aggregate_Total(token, record_ids)`
+
+Input: finance session and distinct selected IDs. Verify ownership/signatures/hash/catalog/key.
+Homomorphically add ciphertexts, decrypt only the final aggregate once. Output: IDs, encrypted total,total.
+Query selection is audited; single/overlapping queries can reveal individual amounts (not threshold privacy).
+

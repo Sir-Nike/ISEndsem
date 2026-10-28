@@ -1,0 +1,178 @@
+Lab 4 additional Q1: ElGamal digital rights management
+
+What the manual asks
+
+Master ElGamal key, content encryption, customer access, timed grants/revocation, creator control, 24-month renewal, storage and auditing.
+
+Start here: the idea in plain English
+
+Encrypt each content item with a random AES key and wrap the content key using master ElGamal. Store creator ownership and per-customer expiry times. Check grants before decrypting. Revocation disables future access through the service. Rotation unwraps each content key using the old master and rewraps under the new master without decrypting the content. Use Upload, Grant, then View to see the workflow.
+
+How to run
+
+From this question folder, run:
+
+../../../.venv/bin/python solution.py
+
+
+The program is interactive. If you installed dependencies into another environment, use that environment's Python instead. Read Labs/README.md for setup. Paths above assume the environment is in the project root, beside Labs.
+
+Press 1 to run an exercise, enter your values or press Enter for the displayed default, and press 0 to exit. Input conversion and validation errors are printed without terminating the interactive menu. Each function can also be imported and called separately.
+
+Step-by-step solution
+
+1. Start the program and select Run. Read the displayed default inputs before changing them.
+2. Follow the input prompts. Text is encoded to bytes when required; numeric inputs are checked before cryptographic operations.
+3. Read the exercise() function below: it connects the functions in the order needed for this question.
+4. Compare the printed output with the expected result, and repeat using a different input.
+
+def exercise():
+    """Input: DRM menu choices. Upload, grant, read, revoke, rotate and inspect content.
+    Output: persistent encrypted catalog, access checks, recovered content and audit log.
+    """
+    folder = Path(__file__).resolve().parent / "storage"
+    state = load_drm(folder)
+    if state["active"] and time.time() >= state["expires"]:
+        rotate_master(state)
+        save_drm(folder, state, "automatic scheduled renewal")
+    while True:
+        print(
+            "\n1 Upload  2 Grant  3 View  4 Revoke customer/content  5 Revoke master  6 Rotate master  7 List  0 Back"
+        )
+        choice = input("Operation: ").strip()
+        if choice == "0":
+            save_drm(folder, state, "closed session")
+            return
+        try:
+            if choice == "1":
+                cid = ask_text("Content ID", "book1")
+                creator = ask_text("Creator", "Alice")
+                upload_content(
+                    state, cid, creator, ask_text("Content", "A protected e-book").encode()
+                )
+            elif choice == "2":
+                creator = ask_text("Creator", "Alice")
+                customer = ask_text("Customer", "Bob")
+                cid = ask_text("Content ID", "book1")
+                grant_access(
+                    state, creator, customer, cid, ask_int("Access duration seconds", 120, 1)
+                )
+            elif choice == "3":
+                customer = ask_text("Customer", "Bob")
+                cid = ask_text("Content ID", "book1")
+                print("Content:", view_content(state, customer, cid).decode())
+            elif choice == "4":
+                creator = ask_text("Creator", "Alice")
+                customer = ask_text("Customer", "Bob")
+                cid = ask_text("Content ID", "book1")
+                if state["contents"][cid]["creator"] != creator:
+                    raise ValueError("Creator does not own the content.")
+                state["grants"].get(customer, {}).pop(cid, None)
+            elif choice == "5":
+                state["active"] = False
+            elif choice == "6":
+                rotate_master(state)
+            elif choice == "7":
+                print(
+                    "Master active:",
+                    state["active"],
+                    "Expires:",
+                    state["expires"],
+                    "Contents:",
+                    list(state["contents"]),
+                )
+            else:
+                print("Invalid choice.")
+                continue
+            save_drm(folder, state, "operation " + choice)
+        except (ValueError, KeyError, OSError) as error:
+            print("Rejected:", error)
+            save_drm(folder, state, "rejected operation " + choice)
+
+
+Follow the calls in exercise() from top to bottom. It obtains the inputs, calls the small functions that do the work, and prints intermediate values and the final result. Bytes are shown as hexadecimal when ordinary text would be unreadable. A successful round trip prints a recovered message equal to the input; verification examples also show a changed message being rejected where applicable.
+
+Every function explained
+
+ask_text(label, default)
+
+Input: a prompt and default string. Read text, or use the default when Enter is pressed.
+Output: a string. Use ask_text('Message', 'hello') to let the user choose a message.
+
+ask_int(label, default, minimum, maximum)
+
+Input: prompt, default integer, optional inclusive limits. Read and validate a number.
+Output: an integer; raise ValueError on bad input. Use for keys, counts, or amounts.
+
+seal(data, key)
+
+Input: plaintext bytes and AES key. Encrypt and authenticate using AES-GCM.
+Output: dictionary containing nonce, tag and ciphertext as hex strings for JSON storage.
+
+open_seal(record, key)
+
+Input: GCM record and matching AES key. Verify the tag while decrypting.
+Output: plaintext bytes. Wrong keys or modified data raise ValueError.
+
+elgamal_keys(bits)
+
+Input: demonstration modulus bit size. Generate safe prime p=2q+1 and subgroup generator.
+Output: (public dictionary p,g,y; private x). Use 2048+ bits for serious parameters.
+
+elgamal_encrypt(public, message)
+
+Input: ElGamal public parameters and integer 1<=message<p. Randomize and encrypt.
+Output: pair (g^k mod p, message*y^k mod p). Use fresh k for every encryption.
+
+elgamal_decrypt(public, private, ciphertext)
+
+Input: public parameters, private exponent and ciphertext pair. Remove the shared mask.
+Output: original integer. Multiply c2 by the modular inverse of c1^private.
+
+load_drm(folder)
+
+Input: storage directory. Load/create master ElGamal key, content catalog and grants.
+Output: state dictionary. The containing OS account is the trusted administrator.
+
+save_drm(folder, state, event)
+
+Input: directory, DRM state and event. Save owner-only state and append an audit line.
+Output: drm.json and audit.jsonl. Call after encryption, grants, renewals or revocation.
+
+upload_content(state, content_id, creator, data)
+
+Input: DRM state, unique content ID, creator identity and content bytes.
+Output: new encrypted catalog entry in state. ElGamal wraps a random AES-GCM content key.
+
+grant_access(state, creator, customer, content_id, seconds)
+
+Input: state, creator, customer, content ID and positive duration. Check ownership.
+Output: expiring access grant saved in state. Another creator cannot grant this content.
+
+view_content(state, customer, content_id)
+
+Input: state, customer and content ID. Check master status and per-content grant.
+Output: decrypted content bytes. Deny revoked/expired grants before using the private key.
+
+rotate_master(state)
+
+Input: state. Decrypt only stored content keys and rewrap them under a new ElGamal master.
+Output: updated key pair, active status and two-year expiry; content ciphertext stays intact.
+
+exercise()
+
+Input: DRM menu choices. Upload, grant, read, revoke, rotate and inspect content.
+Output: persistent encrypted catalog, access checks, recovered content and audit log.
+
+main()
+
+Input: terminal choices. Run the exercise safely.
+Output: printed results. Use python solution.py and choose a menu option.
+
+What to change during an exam
+
+Change values through the prompts first. For a different scenario, replace the example messages or record fields in exercise(), and keep the cryptographic functions. Match the requested algorithm, key size, mode, and hash exactly. Store IVs/nonces alongside ciphertext when needed. Keep private keys private. Hashing cannot be decrypted; encryption can. A hash by itself does not prove who sent a message.
+
+Notes and limitations
+
+The manual proposes distributing a single master private key to customers. That would let every recipient decrypt all content and defeat granular revocation. This solution keeps the master private key inside the local service and distributes authorized decryption access instead. Creator/customer names select simulated identities, not authenticated logins. The OS user is trusted; the JSON file has owner-only permissions. Finite-field 256-bit keys are quick practice defaults; choose the requested 2048-bit size for the specified configuration. Renewal runs at startup, not while the program is closed.

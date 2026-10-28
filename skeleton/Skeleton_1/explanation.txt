@@ -1,0 +1,283 @@
+Skeleton 1: complete hybrid encryption workflow
+
+Run it
+
+From the project root:
+
+bash
+.venv/bin/python -m pip install -r skeleton/requirements.txt
+.venv/bin/python skeleton/Skeleton_1/skeleton.py
+
+
+Choose 1 once to generate the sender and receiver identities. Choose 2, enter record ID R001 and plaintext Hello exam. Choose 3: every verification result should be True. Choose 4: the receiver checks everything again and displays Hello exam. Choose 0 to exit. Restart and choose 4 to read the saved package; it reuses the matching receiver private key.
+
+There are no command-line run options. There are no user-defined classes. Keys and artifacts are created beside the script in practice_data/, regardless of your terminal's current directory. The delivery folder contains no generated practice keys or messages.
+
+What each algorithm does
+
+| Operation | Algorithm | Function |
+| --- | --- | --- |
+| Encrypt/decrypt plaintext | AES-256-GCM, 32-byte key, fresh 12-byte nonce, 16-byte tag | Encrypt / Decrypt |
+| Encrypt/decrypt AES key | RSA-2048 OAEP with SHA-256 | Encrypt_Key / Decrypt_Key |
+| Sign/verify encrypted package | Textbook ElGamal signature over SHA-256 of package bytes | DS_Sign / DS_Verify |
+| Separate integrity digest | SHA-256 of the same package bytes | Hash_Generate / Hash_Check |
+
+RSA here wraps the AES key; ElGamal signs the package. These are separate identities and operations. RSA-OAEP can carry this 32-byte key but is not intended to encrypt arbitrary long plaintexts directly. AES encrypts the actual message.
+
+The ElGamal signature group defaults to a 256-bit safe prime for quick lab practice, matching the lab's readable arithmetic approach. That size is not suitable for production security. To use a larger exam-specified group, pass its bit size in the Generate_Sender_Keys call inside Key_Setup before first generating identities; larger safe-prime generation can take appreciably longer. Existing identities are always reused. PyCryptodome supplies RSA, AES, SHA-256, randomness and ElGamal key generation; the textbook ElGamal signature equations are written as plain functions so they can be replaced with the lab functions.
+
+Exact workflow and the corresponding calls
+
+Setup
+
+1. Generate the receiver's RSA private/public pair together. Store both in separate files.
+2. Generate the sender's ElGamal private/public pair together. Store both separately.
+3. Treat the local public copies in keys/ as established trusted identities. Keys copied into outbox/ are received artifacts, not independent trust anchors.
+4. On later runs, Key_Setup checks and reuses the existing pairs. Missing or mismatched identity files cause an error instead of replacing a key and stranding old ciphertext.
+
+Sender
+
+1. Menu collects record ID and plaintext. Send reads only the sender signing private key and the two public keys; it does not read the receiver private key.
+2. Metadata builds record ID, version, algorithm labels and public-key fingerprints. This metadata is visible, not encrypted.
+3. Generate_Symmetric_Key returns fresh random 32-byte key material. Encrypt encodes the input text to UTF-8 at its call site and encrypts those bytes with AES-GCM.
+4. Encrypt feeds canonical metadata into cipher.update() as additional authenticated data (AAD). This binds the metadata to the ciphertext's authentication tag.
+5. Encrypt_Key wraps the AES key using the receiver public key and RSA-OAEP/SHA-256.
+6. Send constructs a dictionary with ciphertext, nonce, tag, encrypted_key, metadata, sender_public, receiver_public.
+7. Canonical sorts dictionary keys, fixes JSON separators and produces UTF-8 bytes. Hash_Generate and DS_Sign both process these same bytes.
+8. Write_Cipher, Write_Key, Write_DS and Write_Hash save separate .txt files. Metadata and copied public keys are also separate text files. The sender's plaintext AES key is saved only under its private local key directory, as requested.
+
+Receiver/reviewer
+
+1. Read_Package reads the separate public artifact files and reconstructs their dictionary. It converts JSON text back into dictionaries where needed; binary values remain hex until their algorithms need bytes.
+2. Verify_Package reads trusted public copies from keys/. It compares the received sender and receiver identities with those trusted copies and checks metadata/algorithm/fingerprint consistency.
+3. DS_Verify checks the ElGamal signature over the reconstructed canonical package. Hash_Check independently compares the stored and recalculated SHA-256 digest.
+4. If any check fails, Receive refuses to unwrap the key or decrypt the message.
+5. Decrypt_Key reads the existing matching receiver private key and recovers AES key bytes from encrypted_key.txt.
+6. Decrypt reconstructs GCM with the saved nonce, feeds exactly the same metadata as AAD, and uses decrypt_and_verify with the tag. It returns no plaintext on authentication failure.
+7. Receive decodes the authenticated bytes as UTF-8 and returns text for Menu to print. It does not save recovered plaintext or recovered AES keys.
+
+The reviewer can run option 3 without the sender private key, receiver private key, or plaintext AES-key file. The receiver can run option 4 without the sender private key or the sender's saved AES key.
+
+Every storage file is .txt
+
+text
+practice_data/
+  keys/
+    sender/
+      private_key.txt       ElGamal p,g,x as JSON text; private
+      public_key.txt        trusted ElGamal p,g,y as JSON text
+      symmetric_key.txt     latest plaintext AES key as hex; private, sender only
+    receiver/
+      private_key.txt       matching RSA private PEM; private
+      public_key.txt        trusted RSA public PEM
+  outbox/
+    ciphertext.txt          AES ciphertext as hex
+    nonce.txt               GCM nonce as hex
+    tag.txt                 GCM authentication tag as hex
+    encrypted_key.txt       RSA-encrypted AES key as hex
+    metadata.txt            record ID, algorithms and key fingerprints as JSON text
+    sender_public_key.txt   received/copy of ElGamal public key
+    receiver_public_key.txt received/copy of RSA public PEM
+    signature.txt           ElGamal r,s integers as JSON text
+    hash.txt                SHA-256 digest as 64 hex characters
+
+
+JSON content is text and is deliberately saved with .txt extensions. Hex is also text: each byte becomes two characters. PEM is already a textual representation of a key. Neither hex nor JSON encrypts its contents.
+
+A .txt extension does not make a key public or safe to share. Keep keys/sender/private_key.txt, keys/sender/symmetric_key.txt and keys/receiver/private_key.txt out of a transmitted package. The program sets owner-only file permissions for these private files. They are unencrypted local teaching files, so the operating-system account is trusted. The complete practice_data directory is not a package to send to another person.
+
+Sending a new message overwrites the current outbox and sender symmetric_key.txt. This is a single-current-message skeleton, not a multi-record database. The record ID labels the package; it does not create another directory. Separate writes are not an atomic multi-file transaction: interrupted sends or mixed artifact sets should fail verification. Avoid simultaneous writers.
+
+How the ElGamal functions work
+
+The public parameters are prime p and generator g. The sender chooses secret x and publishes y = g^x mod p. Generate_Sender_Keys calls Crypto.PublicKey.ElGamal.generate, which creates safe-prime parameters p = 2q+1 and a generator g of its order-q subgroup. The signing equation modulo p-1 still gives the verification equality because g^(p-1) = 1 modulo p.
+
+DS_Sign converts SHA-256(package_bytes) into integer h. It chooses a fresh random nonce k with gcd(k,p-1)=1 so k has a modular inverse. It calculates:
+
+text
+r = g^k mod p
+s = (h - x*r) * inverse(k, p-1) mod (p-1)
+
+
+The signature is the pair r,s; the secret k is never saved. A zero s is retried. Reusing k can expose the signing private key.
+
+DS_Verify validates signature ranges, computes the same h, and compares:
+
+text
+g^h mod p == (y^r * r^s) mod p
+
+
+The equality holds because y^r*r^s = g^(x*r+k*s), and the signing equation makes x*r+k*s congruent to h modulo p-1. Altering a signed field changes h and should make verification fail.
+
+DS_Sign hashes the package bytes itself. Send does not pass the already printed hex digest to DS_Sign, so there is no accidental double hash. The standalone hash file is an additional question-required output.
+
+Choosing the bytes that are signed
+
+The package includes ciphertext, wrapped key, nonce, tag, public identities and metadata. Neither signature.txt nor hash.txt is included inside the signed package: including a signature inside the data used to calculate that same signature would be circular.
+
+Because the encrypted package is signed, public verification does not require plaintext. If an exam specifically says to hash a plaintext file or sign its hash, adapt that part of the workflow and the receiver's verification order. Do not claim this ciphertext-package hash is a plaintext hash.
+
+A plain hash cannot stop an attacker from replacing both data and digest. The signature must pass against a trusted public key. Merely accepting sender_public_key.txt supplied by the same attacker would allow key substitution. This program compares that received key with keys/sender/public_key.txt before accepting the package. Both trusted local public files must be established separately in a real transfer; copying everything from an untrusted source establishes no trust.
+
+Tampering practice
+
+After sending a message, edit a hex character in outbox/ciphertext.txt and choose 3. Signature/hash checks should fail (or malformed encoding should be refused), and option 4 must not release plaintext. Restore validity by sending again. Repeat with metadata.txt, encrypted_key.txt, nonce.txt, tag.txt, signature.txt or hash.txt. An edited public key is also rejected against the trusted local identity.
+
+Change only files in outbox for this exercise. Modifying the trusted key directory changes the trust assumptions or destroys access to old ciphertext. No automatic key-reset option is supplied.
+
+Replacing functions in the exam
+
+Keep the interfaces below consistent so Menu, Send and Receive need few changes:
+
+| Function pair | Input contract | Output contract |
+| --- | --- | --- |
+| Encrypt / Decrypt | bytes + symmetric key + metadata/AAD bytes; reverse accepts envelope | envelope dictionary / plaintext bytes |
+| Encrypt_Key / Decrypt_Key | key bytes + public key; reverse accepts encrypted-key text + private key | encrypted-key text / key bytes |
+| DS_Sign / DS_Verify | data bytes + private key; reverse includes signature + trusted public key | JSON-compatible signature / bool |
+| Hash_Generate / Hash_Check | data bytes; checking also takes saved digest | digest text / bool |
+
+Replacing AES-GCM with CBC needs IV storage and padding changes, and a matching change to envelope fields and metadata labels. Replacing signatures also changes sender-key generation/serialization. SHA-256 can be changed only if both the separate digest and intended signature-hash choices are kept consistent. RSA-OAEP has its own SHA256 parameter; do not change it accidentally just because the separate record hash changes. Adapt a lab function's text/bytes/tuple return format with a small wrapper if needed.
+
+This skeleton does not implement logins, network transport, Paillier, keyword search, key expiry, audit logs, timestamps or threshold decryption. Those require additional functions/workflow steps when the question requests them.
+
+Library usage
+
+Use the relevant PyCryptodome API for each operation: Crypto.Cipher.AES for AES-GCM, Crypto.PublicKey.RSA for RSA key pairs, Crypto.Cipher.PKCS1_OAEP for AES-key wrapping, Crypto.Hash.SHA256 for hashing, and Crypto.PublicKey.ElGamal.generate for sender key generation. Skeletons 2 and 3 also use Crypto.Protocol.KDF.scrypt for password verifiers and Crypto.Signature.pss for the separate application audit/storage signatures.
+
+ElGamal.generate returns library integer values, converted with int() for existing JSON/.txt storage. Its generator belongs to an order-q subgroup of the safe-prime group, where p=2q+1. Registration accepts these library-generated keys and the earlier full-order keys. Existing keys are reused, not regenerated.
+
+PyCryptodome's public ElGamal sign() method raises NotImplementedError; there is no usable public matching signature API. DS_Sign and DS_Verify therefore retain the textbook equations, using Crypto.Hash.SHA256 for their digest. They do not call the library's private _sign/_verify methods. Standard Python still handles menus, files, JSON, constant-time comparisons, login tokens and modular arithmetic where appropriate.
+
+Every function: inputs, operation, outputs and usage
+
+Canonical(value)
+
+Input: JSON-compatible value. Sort keys and encode consistently as UTF-8.
+Output: bytes. Use Canonical(package) identically before hashing, signing and verification.
+
+Write_Text(path, text, private=False)
+
+Input: destination Path, text str and private flag. Save a UTF-8 .txt file.
+Output: None. Private files get owner-only permissions; public artifacts use normal permissions.
+Use Write_Text(KEYS / 'sender/private_key.txt', json_text, True).
+
+Read_Text(path)
+
+Input: text-file Path. Read UTF-8 without changing its contents. Output: str or file error.
+
+Generate_Receiver_Keys(bits=2048)
+
+Input: RSA modulus bits, default 2048. Generate matching receiver private/public keys together.
+Output: (private PEM str, public PEM str). Use the public key to wrap AES, private to unwrap.
+
+Generate_Sender_Keys(bits=256)
+
+Input: ElGamal modulus bits, default 256 for quick practice (not a production size).
+Let Crypto.PublicKey.ElGamal.generate create p,g,x,y using secure random bytes.
+Output: (private dict {p,g,x}, public dict {p,g,y}); int() makes library values JSON-compatible.
+Use Generate_Sender_Keys(2048) when the exam requires a larger modulus.
+
+Key_Setup()
+
+Input: none. Generate/save both identities only if no identity files exist.
+Output: None. Existing complete pairs are checked and reused; missing/mismatched keys are refused.
+Never regenerate receiver private key after a message was encrypted to its public key.
+
+Generate_Symmetric_Key()
+
+Input: none. Generate fresh 32 random bytes. Output: AES-256 key bytes; use once per message.
+
+Encrypt(plaintext, key, aad)
+
+Input: plaintext bytes, AES key bytes and metadata bytes as AAD.
+Encrypt using AES-256-GCM with fresh 12-byte nonce. Output: hex dict ciphertext/nonce/tag.
+Use Encrypt(text.encode(), key, Canonical(metadata)); caller saves all three outputs.
+
+Decrypt(envelope, key, aad)
+
+Input: hex envelope dict, recovered AES key, identical metadata bytes.
+Verify GCM tag and decrypt. Output: authenticated plaintext bytes; ValueError on altered data.
+Never return a plaintext obtained without the tag check.
+
+Encrypt_Key(key, receiver_public)
+
+Input: AES key bytes and receiver public PEM str. RSA-OAEP/SHA-256 encrypt only that key.
+Output: encrypted key hex str. Use Encrypt_Key(key, receiver_public); not for encrypting files.
+
+Decrypt_Key(encrypted_key, receiver_private)
+
+Input: encrypted key hex str and matching receiver private PEM str.
+RSA-OAEP/SHA-256 unwraps AES key. Output: original key bytes or ValueError on failure.
+
+DS_Sign(data, private)
+
+Input: canonical package bytes and ElGamal private dict {p,g,x}.
+Public ElGamal.sign() is unimplemented; apply the signature equations here.
+Hash bytes with SHA-256; choose fresh k coprime to p-1; compute r=g^k, s=(h-x*r)/k mod p-1.
+Output: dict {r,s}. Never reuse k. Use DS_Sign(Canonical(package), sender_private).
+
+DS_Verify(data, signature, public)
+
+Input: package bytes, signature {r,s}, trusted public dict {p,g,y}.
+Compare g^SHA256(data) with y^r*r^s modulo p. Output: bool; no private key/plaintext needed.
+
+Hash_Generate(data)
+
+Input: bytes. Calculate SHA-256. Output: 64-character hex digest str; use on canonical package.
+
+Hash_Check(data, expected)
+
+Input: package bytes and saved hex digest. Recompute and compare. Output: bool.
+A hash alone does not authenticate data; signature verification must also succeed.
+
+Metadata(record_id, sender_public, receiver_public)
+
+Input: record ID and public keys. Build algorithm labels and public-key fingerprints.
+Output: dict; signed as package data and authenticated as AES-GCM AAD.
+
+Write_Cipher(envelope)
+
+Input: ciphertext/nonce/tag hex dict. Save ciphertext.txt, nonce.txt, tag.txt separately.
+Output: None. All three are necessary; never throw away nonce or authentication tag.
+
+Write_Key(encrypted_key)
+
+Input: RSA-wrapped AES key hex str. Save encrypted_key.txt. Output: None; not the plaintext key.
+
+Write_DS(signature)
+
+Input: signature {r,s}. Save its integer components as JSON text in signature.txt. Output: None.
+
+Write_Hash(digest)
+
+Input: SHA-256 hex str. Save hash.txt separately. Output: None.
+
+Read_Package()
+
+Input: none. Read public artifacts from outbox .txt files, preserving their field meanings.
+Output: package dict, signature dict, digest str. Does not read any private/symmetric key.
+
+Send(plaintext, record_id)
+
+Input: plaintext str and record ID. Use existing keys, fresh AES key, encrypt, hash/sign, save.
+Output: package dict. Saves sender's AES key separately in private storage as explicitly requested.
+The receiver never reads that saved plaintext AES key; it must unwrap encrypted_key.txt.
+
+Verify_Package(package, signature, digest)
+
+Input: received package/signature/digest. Compare received keys to independently trusted locals,
+validate metadata, check SHA-256 and ElGamal signature. Output: dict of boolean checks plus overall.
+Verification uses only public files and ciphertext; never either private key or saved AES key.
+
+Receive()
+
+Input: none. Read artifacts, verify before unwrapping AES key, then GCM-authenticate/decrypt.
+Output: plaintext str. Raises on any failed check; never decrypts a package with overall=False.
+No plaintext or recovered AES key is written by the receiver.
+
+Menu()
+
+Input: menu choices, record ID and plaintext. Coordinate setup/send/public checks/receive.
+Output: printed results. Choose setup once; sending overwrites the current outbox and AES key.
+This is a local workflow with no authenticated user roles, networking or command-line flags.
+

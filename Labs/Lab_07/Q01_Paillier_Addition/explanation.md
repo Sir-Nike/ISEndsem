@@ -1,0 +1,104 @@
+# Lab 7 Q1: Paillier homomorphic addition
+
+## What the manual asks
+
+Encrypt 15 and 25, add them while encrypted, decrypt the result and verify the sum.
+
+## Start here: the idea in plain English
+
+Paillier encryption uses modulus n squared. Multiplying two ciphertexts modulo n squared corresponds to adding the original plaintexts modulo n. The aggregation function receives only the public key and ciphertexts. Decrypt the final product once and compare it with the ordinary sum. Keep sums smaller than n if you want ordinary integer addition without wraparound.
+
+## How to run
+
+From this question folder, run:
+
+```bash
+../../../.venv/bin/python solution.py
+```
+
+The program is interactive. If you installed dependencies into another environment, use that environment's Python instead. Read `Labs/README.md` for setup. Paths above assume the environment is in the project root, beside `Labs`.
+
+Press 1 to run an exercise, enter your values or press Enter for the displayed default, and press 0 to exit. Input conversion and validation errors are printed without terminating the interactive menu. Each function can also be imported and called separately.
+
+## Step-by-step solution
+
+1. Start the program and select Run. Read the displayed default inputs before changing them.
+2. Follow the input prompts. Text is encoded to bytes when required; numeric inputs are checked before cryptographic operations.
+3. Read the `exercise()` function below: it connects the functions in the order needed for this question.
+4. Compare the printed output with the expected result, and repeat using a different input.
+
+```python
+def exercise():
+    """Input: two nonnegative integers and modulus size. Encrypt and add without individual decryption.
+    Output: ciphertexts, encrypted sum, decrypted sum and modulo-n verification.
+    """
+    bits = ask_int("Demo modulus bits", 512, 128, 4096)
+    public, private = paillier_keys(bits)
+    a = ask_int("First integer", 15, 0, public["n"] - 1)
+    b = ask_int("Second integer", 25, 0, public["n"] - 1)
+    c1 = paillier_encrypt(public, a)
+    c2 = paillier_encrypt(public, b)
+    combined = encrypted_sum(public, [c1, c2])
+    result = paillier_decrypt(public, private, combined)
+    print("n:", public["n"], "Ciphertexts:", c1, c2, "Encrypted sum:", combined)
+    print(
+        "Decrypted sum:",
+        result,
+        "Expected modulo n:",
+        (a + b) % public["n"],
+        "Verified:",
+        result == (a + b) % public["n"],
+    )
+```
+
+Follow the calls in `exercise()` from top to bottom. It obtains the inputs, calls the small functions that do the work, and prints intermediate values and the final result. Bytes are shown as hexadecimal when ordinary text would be unreadable. A successful round trip prints a recovered message equal to the input; verification examples also show a changed message being rejected where applicable.
+
+## Every function explained
+
+### `ask_text(label, default)`
+
+Input: a prompt and default string. Read text, or use the default when Enter is pressed.
+Output: a string. Use ask_text('Message', 'hello') to let the user choose a message.
+
+### `ask_int(label, default, minimum, maximum)`
+
+Input: prompt, default integer, optional inclusive limits. Read and validate a number.
+Output: an integer; raise ValueError on bad input. Use for keys, counts, or amounts.
+
+### `paillier_keys(bits)`
+
+Input: desired modulus size. Generate p/q and compute Paillier parameters with g=n+1.
+Output: (public dictionary n/g, private dictionary lambda/mu). Keep private values secret.
+
+### `paillier_encrypt(public, message)`
+
+Input: public n/g and integer 0<=message<n. Choose fresh random r coprime to n.
+Output: ciphertext g^message * r^n modulo n^2. Same message encrypts differently each time.
+
+### `paillier_decrypt(public, private, ciphertext)`
+
+Input: matching public/private keys and valid ciphertext. Apply L(c^lambda)*mu modulo n.
+Output: plaintext integer modulo n. L(u) means (u-1)//n.
+
+### `encrypted_sum(public, ciphertexts)`
+
+Input: public key and iterable of Paillier ciphertexts. Multiply modulo n^2.
+Output: encryption of the sum modulo n. No individual plaintext or private key is needed.
+
+### `exercise()`
+
+Input: two nonnegative integers and modulus size. Encrypt and add without individual decryption.
+Output: ciphertexts, encrypted sum, decrypted sum and modulo-n verification.
+
+### `main()`
+
+Input: terminal choices. Run the exercise safely.
+Output: printed results. Use python solution.py and choose a menu option.
+
+## What to change during an exam
+
+Change values through the prompts first. For a different scenario, replace the example messages or record fields in `exercise()`, and keep the cryptographic functions. Match the requested algorithm, key size, mode, and hash exactly. Store IVs/nonces alongside ciphertext when needed. Keep private keys private. Hashing cannot be decrypted; encryption can. A hash by itself does not prove who sent a message.
+
+## Notes and limitations
+
+The manual sample labeled Paillier uses RSA-derived values and incorrect formulas. This implementation uses actual Paillier arithmetic modulo n^2. Ciphertext multiplication means plaintext addition. The 512-bit default is for quick practice, not a production key size.

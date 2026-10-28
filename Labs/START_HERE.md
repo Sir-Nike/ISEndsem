@@ -1,0 +1,60 @@
+# InfoSec from zero: reading these programs
+
+## The five jobs you keep seeing
+
+1. **Confidentiality:** keep content secret. Encryption turns plaintext into ciphertext; the right key reverses it. AES is the usual tool for data.
+2. **Integrity:** detect changes. SHA-256 gives a digest of bytes. If one bit changes, the digest normally changes. Comparing an untrusted digest alone does not stop an attacker who can replace both message and digest.
+3. **Authenticity:** establish the sender or authorized peer. A signature is created by a private key and checked by its trusted public key. An HMAC is created/checked with a shared secret.
+4. **Encrypted computation:** calculate a supported result before decrypting. Paillier supports sums; textbook RSA and ElGamal support products, within their moduli.
+5. **Encrypted search:** index keywords using stable tokens, retrieve matching encrypted records, and decrypt only authorized results.
+
+## Keys, sizes and bytes
+
+A symmetric key is secret and is used on both sides. AES keys are 16/24/32 bytes (128/192/256 bits). AES block size is always 16 bytes, regardless of key length. DES blocks are 8 bytes and its key input is 8 bytes (56 effective key bits).
+
+An asymmetric key pair has a shareable public key and a secret private key. RSA-2048 means a roughly 2048-bit modulus, not a 2048-byte message. RSA-OAEP with SHA-256 and RSA-2048 can encrypt at most 190 bytes at once. For a file, AES encrypts the file and RSA encrypts only the AES key: hybrid encryption.
+
+Python text and bytes differ:
+
+```python
+text = 'hello'
+data = text.encode()     # str -> UTF-8 bytes: b'hello'
+text_again = data.decode()  # bytes -> str
+shown = data.hex()       # bytes -> printable hex: '68656c6c6f'
+data_again = bytes.fromhex(shown)
+```
+
+`bytes.fromhex('01234567')` produces FOUR bytes. `'01234567'.encode()` produces EIGHT bytes. The cipher helper prompts make this explicit with `hex:` and `text:` prefixes.
+
+## IVs, nonces, padding and tags
+
+CBC uses an initialization vector (IV). Save it with the ciphertext and use a fresh unpredictable IV for each encryption. CBC accepts complete blocks, so PKCS#7 padding adds bytes and unpad removes them. CBC encryption alone does not prove integrity.
+
+CTR generates a keystream from a nonce and counter. It needs no padding. Reusing the same key/nonce pair can expose messages.
+
+GCM encrypts and authenticates. Save nonce, ciphertext and authentication tag. `decrypt_and_verify` checks the tag and raises an error if data/key is wrong. The IV/nonce/tag are not private keys.
+
+## Reading the code without knowing cryptography
+
+Start at `exercise()`: it asks for values, calls functions, and prints results. Then inspect the function it calls. Each function has a plain-language docstring stating input, operation, output and usage. `main()` repeats the menu and catches common input mistakes.
+
+`pow(a, b, n)` means a to the power b modulo n, computed efficiently. `pow(a, -1, n)` means modular inverse, which exists only when a and n are coprime. `% n` wraps a result into 0 through n-1. `math.gcd(a,n)==1` tests coprimality.
+
+A dictionary such as `{'n': n, 'g': g}` groups named values without defining a class. Functions pass dictionaries/tuples/bytes around. JSON stores dictionaries, lists, strings and integers; binary values are encoded as hex for storage.
+
+## What you should be able to explain aloud
+
+- What is plaintext, ciphertext, key, IV/nonce, digest, signature and authentication tag?
+- Which key signs, which key verifies, and which key decrypts?
+- Why is hashing not encryption?
+- Why are RSA file transfers hybrid?
+- Why does a Paillier ciphertext product decrypt to a sum?
+- Why does textbook RSA multiplication work while OAEP does not preserve it?
+- Why use a stable HMAC token for keyword lookup instead of comparing randomized encryptions?
+- How does a program reject bad input, a wrong key, a changed signature or an expired access grant?
+
+## A practical study order
+
+Learn AES encryption/decryption, SHA hashing and RSA signatures first. Then learn Paillier sums, RSA products and keyword indexes. After that, inspect the key-management and role menus to see how those functions fit into an application. Classical ciphers are useful modular-arithmetic practice; their rules differ from modern cryptographic libraries.
+
+The five PYQs combine these components. Their complete question-specific implementations are in ../PYQ_Solutions/, with a README and detailed explanation.md / explanation.txt files for each question. Start with the matching lab concept here, then study the corresponding PYQ solution.

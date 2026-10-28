@@ -1,0 +1,406 @@
+# Q2: Patient records, AES, SHA-256, RSA and Paillier
+
+## 1. The original question
+
+Create 2 files
+Patient_records and encrypted_patient_records
+
+A dataset was provided so put that data into the patient records
+
+Patient_id
+Patient_name
+Diagnosis
+Blood_glucose
+Treatment
+
+A menu driven program
+
+1) display the dataset
+2) encrypt the dataset using AES (any byte)
+3) produce a sha-256 of a given record using its pateint id
+4) sign the dataset using RSA
+5) verify the signature for tampering
+6) add the total blood glucose of all patients and show the homomorphic sum using pallier
+7) search for patient using diagnosis and dipaly the patient is
+8) display the patient records for a user input patient id only after verification and decrypt the data
+9) exit
+
+## 2. What you are building, in plain English
+
+AES protects each full patient record, RSA signatures detect modifications, SHA-256 fingerprints a selected record, Paillier permits glucose totals without decrypting each glucose, and HMAC indexing finds diagnoses without scanning decrypted records.
+
+This solution is intentionally split into small functions. Read the menu first to understand what the user can do, then follow the function calls. Every function has an input/operation/output/usage comment in the Python source and is explained again below.
+
+## 3. Basic vocabulary before reading the code
+
+| Term | Meaning in these programs | What you should say in a viva |
+|---|---|---|
+| Plaintext | Original message or record bytes | Encryption starts from plaintext. |
+| Ciphertext | Encrypted bytes or encrypted integer | You need the correct key to recover the original value. |
+| AES key | Secret 16/24/32 bytes | AES-192 means 24 bytes, AES-256 means 32; block size remains 16 bytes. |
+| IV / nonce | Per-encryption parameter stored with ciphertext | It is not the secret key; use a fresh value with each encryption. |
+| SHA/MD5 digest | Fixed-size fingerprint of exact bytes | Hashing is one-way, so it cannot be decrypted. |
+| Signature | Private-key proof over a hash | Sign with private key; verify with the trusted public key. |
+| HMAC token | Deterministic keyed lookup value | The same normalized keyword gives the same token for indexing. |
+| Paillier aggregate | Product of ciphertexts modulo n squared | It decrypts to a sum of plaintext numbers modulo n. |
+| Canonical JSON | Sorted keys and stable separators encoded as UTF-8 | Sender and verifier hash exactly the same representation. |
+| Expiry | Persisted issue time plus lifetime | Restarting must not give an old key another lifetime. |
+
+
+## 4. Install and run
+
+The only third-party Python package is PyCryptodome. From the **project root**, where Labs and PYQ_Solutions live:
+
+```bash
+python3 -m venv .venv
+.venv/bin/python -m pip install -r PYQ_Solutions/requirements.txt
+.venv/bin/python PYQ_Solutions/Q02_Patient_Records/solution.py
+```
+
+Your existing `.venv` already has this package in the current workspace. On Windows use `.venv\Scripts\python.exe` instead. If your terminal is inside this question folder, run `../../.venv/bin/python solution.py`. Enter normal menu choices; there is no special command-line run mode. When a default appears in square brackets, Enter accepts it. Q1 deliberately requires its exam parameters without numeric defaults.
+
+First-run account passwords are hidden while typing in a normal terminal. Remember the passwords you set: the programs do not install default shared passwords. The KDF password used for a report or voter credential is distinct from a role login password.
+
+## 5. A complete worked run
+
+On first run choose AES length 32 (or 16/24). Choose 10 and enter the supplied dataset. The actual exam dataset is absent from pyq.txt, so three clearly labeled example rows are provided as editable defaults: P001 glucose 140, P002 glucose 95, P003 glucose 160. Choose 2 to encrypt, 4 to sign, then 5: True. Choose 6: final glucose total 395. Choose 7 and Diabetes: IDs P001 and P003. Choose 8 and P001: one verified decrypted record. Choose 11 and type TAMPER to damage a ciphertext, then 5: False; option 8 must refuse. Recover by re-encrypting unchanged source with 2 and signing with 4. Exit with 9.
+
+## 6. The algorithm, step by step
+
+1. Enter the five fields for each patient; reject duplicate IDs and invalid glucose.
+2. AES-GCM-encrypt canonical bytes of each patient record; store nonce, tag and ciphertext.
+3. Separately Paillier-encrypt the numeric glucose for aggregation.
+4. Build a diagnosis HMAC token to patient-ID inverted index.
+5. Sign the plaintext source and complete encrypted snapshot separately with RSA-2048/SHA-256. Before signing, check they represent the same data.
+6. For sums/search/decryption, verify both signatures first.
+7. Compute encrypted total with ciphertext multiplication modulo n squared, then decrypt only the total.
+8. For option 8, decrypt only the selected record after verification.
+
+Cryptographic ciphertexts, IVs, salts, nonces and signatures can vary between runs because encryption and key generation use randomness. Compare the recovered plaintext, verification booleans, search results and totals instead of expecting a fixed long ciphertext string. Q1 uses raw deterministic RSA, so its fixed worked example does reproduce the same small ciphertext integers.
+
+## 7. What is saved and why
+
+storage/Patient_records.json contains the required source dataset. storage/encrypted_patient_records.json stores AES records, encrypted glucose and diagnosis index. keys.json stores persistent secret/public keys; dataset_signature.json stores two RSA signatures. The extra files supply the key/signature state needed for restart.
+
+All generated state is written beside the script under the documented subfolders. Changing your terminal's current directory does not redirect the records. Reopening loads the previous keys and data. Keep the key files with the encrypted data; deleting keys does not decrypt or reset existing records. To start a completely separate practice run, copy the question folder to a new location before generating data.
+
+## 8. Every Python function explained
+
+Read functions in their file order. Inputs named `public` hold shareable encryption/verification parameters; `private`, `keys`, `record_keys` or `credentials` may contain secrets and must not be sent with an untrusted request.
+
+### File: `solution.py`
+
+#### `ask_text(label, default=None)`
+
+Input: prompt and optional default. Read terminal text; Enter accepts a supplied default.
+
+Output: nonempty string. Use ask_text('Patient ID') when a value must be entered.
+
+Follow these calls when reading the implementation: `ValueError`, `input`.
+
+#### `ask_int(label, default=None, minimum=None, maximum=None)`
+
+Input: prompt, optional default and inclusive bounds. Read and validate an integer.
+
+Output: integer, or ValueError. Use for menu parameters, counts and cryptographic sizes.
+
+Follow these calls when reading the implementation: `ask_text`, `ValueError`.
+
+#### `canonical(record)`
+
+Input: JSON-compatible record. Sort keys and remove irrelevant spaces consistently.
+
+Output: UTF-8 bytes. Hash/sign these exact bytes so dictionary formatting cannot change results.
+
+#### `read_json(path, default=None)`
+
+Input: JSON file path and optional missing-file default. Parse saved records.
+
+Output: decoded JSON. Invalid JSON raises an error instead of silently replacing damaged data.
+
+Follow these calls when reading the implementation: `Path`.
+
+#### `save_json(path, record, secret=False)`
+
+Input: path, record and secret-file flag. Write via a temporary file then replace atomically.
+
+Output: saved JSON file; returns nothing. Secret files receive owner-only permissions.
+
+Follow these calls when reading the implementation: `Path`.
+
+#### `seal(data, key)`
+
+Input: plaintext bytes and 16/24/32-byte AES key. Encrypt/authenticate using GCM.
+
+Output: JSON-safe nonce/ciphertext/tag dictionary. Save all three for verified decryption.
+
+#### `open_seal(envelope, key)`
+
+Input: saved AES-GCM envelope and matching key. Verify the tag before returning data.
+
+Output: plaintext bytes; wrong keys/modified ciphertext raise ValueError.
+
+#### `rsa_sign(private_pem, data, algorithm='sha256')`
+
+Input: RSA private PEM, bytes to sign and sha256/md5/sha512 selection. Hash once and sign.
+
+Output: PKCS#1 v1.5 signature as hex. Private keys remain local; public keys verify.
+
+#### `rsa_verify(public_pem, data, signature, algorithm='sha256')`
+
+Input: trusted RSA public PEM, original bytes, signature hex and hash selection.
+
+Output: True if the signature matches; False for altered data, key or signature encoding.
+
+#### `rsa_pair(bits=2048)`
+
+Input: RSA modulus bits. Ask PyCryptodome to generate a fresh key pair.
+
+Output: dictionary of private/public PEM strings. Save the private part in a secret file.
+
+#### `paillier_keys(bits=512)`
+
+Input: demonstration modulus size. Generate distinct primes and g=n+1 Paillier keys.
+
+Output: public n/g and private lambda/mu dictionaries. Public key encrypts/sums; private decrypts.
+
+Follow these calls when reading the implementation: `ValueError`, `getPrime`, `pow`.
+
+#### `random_unit(n)`
+
+Input: modulus. Choose a random value in 1..n-1 that has a modular inverse.
+
+Output: coprime random integer. Used as Paillier randomness and proof randomness.
+
+#### `paillier_encrypt(public, value, return_randomness=False)`
+
+Input: public key and integer in 0..n-1; optionally request the random witness.
+
+Output: ciphertext, or (ciphertext,r) for ballot proofs. Never publish an individual vote's r.
+
+Follow these calls when reading the implementation: `random_unit`, `ValueError`, `pow`.
+
+#### `check_ciphertext(public, ciphertext)`
+
+Input: Paillier public key and untrusted ciphertext integer. Validate its group/range.
+
+Output: nothing; raise ValueError if it is not an invertible element modulo n squared.
+
+Follow these calls when reading the implementation: `ValueError`.
+
+#### `encrypted_sum(public, ciphertexts)`
+
+Input: public Paillier key and ciphertext list. Multiply valid ciphertexts modulo n squared.
+
+Output: encrypted sum modulo n. This function has no private-key parameter and cannot decrypt inputs.
+
+Follow these calls when reading the implementation: `check_ciphertext`.
+
+#### `paillier_decrypt(public, private, ciphertext)`
+
+Input: matching keys and aggregate ciphertext. Apply Paillier's L function and private inverse.
+
+Output: plaintext integer modulo n. Application roles decide which aggregates may be decrypted.
+
+Follow these calls when reading the implementation: `check_ciphertext`, `pow`.
+
+#### `token(key, text)`
+
+Input: secret HMAC key and already normalized lookup string. Compute deterministic keyed hash.
+
+Output: hex lookup token. A search computes the same token without bulk decryption.
+
+#### `initialize_keys(folder, aes_bytes=32)`
+
+Input: storage folder and AES length 16/24/32. Create keys once, then reuse saved keys.
+
+Output: dictionary of AES/HMAC/RSA/Paillier keys. Reloading preserves old ciphertext readability.
+
+Follow these calls when reading the implementation: `read_json`, `paillier_keys`, `save_json`, `ValueError`, `rsa_pair`, `get_random_bytes`.
+
+#### `validate_patient(record)`
+
+Input: one patient dictionary. Require five fields, nonempty text and nonnegative integer glucose.
+
+Output: normalized patient record. Use before saving or encrypting user-entered exam data.
+
+Follow these calls when reading the implementation: `ValueError`.
+
+#### `enter_dataset(folder)`
+
+Input: user-entered patient count and five fields per patient. Validate uniqueness and values.
+
+Output: Patient_records.json saved; returns the new list. Overwriting requires explicit confirmation.
+
+Follow these calls when reading the implementation: `ask_int`, `save_json`, `read_json`, `validate_patient`, `ask_text`, `ValueError`.
+
+#### `encrypt_dataset(folder, keys)`
+
+Input: folder and saved keys. AES-GCM-encrypt each complete record; Paillier-encrypt glucose separately.
+
+Output: encrypted_patient_records.json, including diagnosis HMAC index; no original record fields inside ciphertext metadata.
+
+Follow these calls when reading the implementation: `read_json`, `save_json`, `ValueError`, `validate_patient`, `seal`, `token`, `canonical`, `paillier_encrypt`.
+
+#### `sign_dataset(folder, keys)`
+
+Input: data folder and RSA identity. Sign current plaintext source and encrypted snapshot separately.
+
+Output: dataset_signature.json and printed signatures. Binding both catches edits to either file.
+
+Follow these calls when reading the implementation: `read_json`, `save_json`, `ValueError`, `validate_patient`, `rsa_sign`, `open_seal`, `paillier_decrypt`, `canonical`.
+
+#### `verify_dataset(folder, keys)`
+
+Input: folder and trusted RSA public identity. Verify both current source and encrypted snapshot.
+
+Output: boolean; invalid/missing/malformed signatures or changed file contents return False.
+
+Follow these calls when reading the implementation: `read_json`, `rsa_verify`, `canonical`.
+
+#### `require_verified_dataset(folder, keys)`
+
+Input: dataset folder and keys. Reject access if current source/encrypted signatures are invalid.
+
+Output: verified encrypted snapshot. Call before search, sums or selected-record decryption.
+
+Follow these calls when reading the implementation: `read_json`, `verify_dataset`, `ValueError`.
+
+#### `record_hash(folder, patient_id)`
+
+Input: source file folder and patient ID. Locate exactly one source record and hash its canonical form.
+
+Output: SHA-256 hexadecimal digest. Hashing is not encryption and cannot be reversed.
+
+Follow these calls when reading the implementation: `read_json`, `ValueError`, `canonical`.
+
+#### `total_glucose(folder, keys)`
+
+Input: verified encrypted dataset and Paillier keys. Sum ciphertexts without decrypting patients.
+
+Output: (aggregate ciphertext, final plaintext sum). Only the aggregate is decrypted in this operation.
+
+Follow these calls when reading the implementation: `require_verified_dataset`, `encrypted_sum`, `ValueError`, `paillier_decrypt`.
+
+#### `search_diagnosis(folder, keys, diagnosis)`
+
+Input: folder, keys and diagnosis text. Compute one normalized HMAC token and look up matching IDs.
+
+Output: patient ID list. Does not decrypt patient records or scan their plaintext diagnoses.
+
+Follow these calls when reading the implementation: `require_verified_dataset`, `token`.
+
+#### `decrypt_patient(folder, keys, patient_id)`
+
+Input: patient ID, folder and keys. Verify signatures first, then decrypt only the requested record.
+
+Output: patient dictionary. A failed dataset check prevents AES decryption entirely.
+
+Follow these calls when reading the implementation: `require_verified_dataset`, `ValueError`, `open_seal`.
+
+#### `main()`
+
+Input: exact nine-option patient menu, plus dataset-entry and intentional-tamper helpers.
+
+Output: saved files, hashes, signatures, encrypted sums, matching IDs and verified selected patients.
+
+Follow these calls when reading the implementation: `ask_int`, `initialize_keys`, `ask_text`, `Path`, `encrypt_dataset`, `read_json`, `record_hash`, `sign_dataset`, `verify_dataset`, `total_glucose`, `search_diagnosis`, `enter_dataset`, `decrypt_patient`, `save_json`.
+
+## 9. How to read the menu code
+
+`solution.py` begins here when you run it:
+
+```python
+def main():
+    """Input: exact nine-option patient menu, plus dataset-entry and intentional-tamper helpers.
+    Output: saved files, hashes, signatures, encrypted sums, matching IDs and verified selected patients.
+    """
+    folder = Path(__file__).resolve().parent / "storage"
+    folder.mkdir(exist_ok=True)
+    if not (folder / "keys.json").exists():
+        aes_bytes = ask_int("AES key length in bytes: 16/24/32", 32)
+        keys = initialize_keys(folder, aes_bytes)
+    else:
+        keys = initialize_keys(folder)
+    print("First use: choose 10 to enter the supplied data, then 2 to encrypt, then 4 to sign.")
+    while True:
+        print("\n1 Display source dataset  2 Encrypt using AES  3 SHA-256 by patient ID")
+        print("4 Sign dataset  5 Verify dataset  6 Homomorphic glucose sum  7 Search diagnosis")
+        print(
+            "8 Verify and decrypt patient  9 Exit  10 Enter/replace dataset  11 Simulate ciphertext tampering"
+        )
+        try:
+            choice = ask_text("Choice")
+            if choice == "9":
+                return
+            if choice == "1":
+                print(json.dumps(read_json(folder / "Patient_records.json", []), indent=2))
+            elif choice == "2":
+                encrypt_dataset(folder, keys)
+            elif choice == "3":
+                print("SHA-256:", record_hash(folder, ask_text("Patient ID")))
+            elif choice == "4":
+                sign_dataset(folder, keys)
+            elif choice == "5":
+                print("Signature verification:", verify_dataset(folder, keys))
+            elif choice == "6":
+                aggregate, total = total_glucose(folder, keys)
+                print("Encrypted total:", aggregate, "Decrypted final total:", total)
+            elif choice == "7":
+                print(
+                    "Matching patient IDs:", search_diagnosis(folder, keys, ask_text("Diagnosis"))
+                )
+            elif choice == "8":
+                print(json.dumps(decrypt_patient(folder, keys, ask_text("Patient ID")), indent=2))
+            elif choice == "10":
+                enter_dataset(folder)
+            elif choice == "11":
+                if (
+                    ask_text(
+                        "This intentionally damages the saved encrypted data. Type TAMPER", "cancel"
+                    )
+                    != "TAMPER"
+                ):
+                    continue
+                encrypted = read_json(folder / "encrypted_patient_records.json")
+                pid = ask_text("Patient ID")
+                value = encrypted["records"][pid]["record"]["ciphertext"]
+                encrypted["records"][pid]["record"]["ciphertext"] = (
+                    "00" if value[:2] != "00" else "01"
+                ) + value[2:]
+                save_json(folder / "encrypted_patient_records.json", encrypted)
+                print("After tampering, signature verification:", verify_dataset(folder, keys))
+            else:
+                print("Choose a listed option.")
+        except (ValueError, KeyError, TypeError, OSError, InvalidOperation) as error:
+            print("Rejected:", error)
+```
+
+The `if __name__ == "__main__": main()` line at the bottom starts the menu when the file is run directly. Importing the file to reuse its functions does not automatically start the menu. A `try/except` around each operation turns ordinary bad input into a readable error so you can return to the menu.
+
+## 10. Python details that matter here
+
+- `text.encode()` converts Python text into bytes. Cryptographic libraries operate on bytes, not Python strings.
+- `bytes.fromhex(text)` restores bytes from a printed hexadecimal string; `.hex()` does the reverse.
+- A dictionary such as `record['signature']` keeps named fields together without defining a class.
+- `pow(a, e, n)` computes modular exponentiation efficiently; `pow(a, -1, n)` computes a modular inverse when one exists.
+- `canonical(record)` is used before hashing/signing. Never hash an ordinary dictionary representation or rely on key insertion order.
+- A verifier must check the signature with a **previously trusted** public key. A key supplied by an unknown sender does not prove identity.
+- Menu code gathers inputs. Separate functions do cryptography, indexing, authorization and storage so you can adapt the question without rewriting everything.
+- Cryptographic API calls such as `AES.new(...)` return library cipher objects. You do not define classes or use object-oriented application design in these solutions.
+
+## 11. Verification, failures and exam modifications
+
+- First perform the successful worked run, then repeat with different input values.
+- Try a missing record ID, an unlisted menu choice, the wrong role, an incorrect password, or a changed ciphertext/signature where applicable. The operation should fail rather than print an apparently valid result.
+- Always verify before exposing selected plaintext. Do not continue decryption after a failed integrity check.
+- Search must use an index; do not decrypt every record to test whether a keyword occurs.
+- For homomorphic totals, aggregation receives the public key and ciphertexts. Keep private-key decryption at the final result step.
+- Match the question's exact key length, hash and cipher mode. AES-192-CBC is not interchangeable with AES-256-GCM when the question specifically requests CBC.
+- If the examiner changes field names or the application story, adapt the input/record dictionaries and menus. Keep the canonical serialization, key handling, verification order and mathematical functions.
+- If you edit data legitimately, encrypt/sign the new state through the authorized function. Editing JSON directly is a tampering test, not an authorized update.
+
+## 12. Assumptions, corrections and practical limits
+
+The question explicitly asks for an original patient file, so source data exists in plaintext with owner-only permissions. That file is for the lab requirement, not a confidentiality claim about the whole directory. Signing intentionally checks the source against encrypted values; the finance-style sum operation itself decrypts only the aggregate. The example dataset is illustrative, not a recovered exam dataset. Paillier defaults to a quick 512-bit teaching modulus; it is not a production parameter. RSA signatures authorize the exact saved snapshot, so changing even an index or unrelated record invalidates that snapshot.
+

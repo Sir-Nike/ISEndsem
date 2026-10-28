@@ -1,0 +1,100 @@
+# Lab 3 additional Q1: ElGamal with supplied parameters
+
+## What the manual asks
+
+Encrypt/decrypt Asymmetric Algorithms with p=7919, g=2, h=6465, x=2999.
+
+## Start here: the idea in plain English
+
+Check whether the supplied public value h equals g^x modulo p before using the pair. If the values disagree, show the discrepancy and derive a consistent public key from x. Then encrypt and decrypt the message byte by byte. This makes an inconsistent prompt visible rather than producing misleading decrypted text.
+
+## How to run
+
+From this question folder, run:
+
+```bash
+../../../.venv/bin/python solution.py
+```
+
+The program is interactive. If you installed dependencies into another environment, use that environment's Python instead. Read `Labs/README.md` for setup. Paths above assume the environment is in the project root, beside `Labs`.
+
+Press 1 to run an exercise, enter your values or press Enter for the displayed default, and press 0 to exit. Input conversion and validation errors are printed without terminating the interactive menu. Each function can also be imported and called separately.
+
+## Step-by-step solution
+
+1. Start the program and select Run. Read the displayed default inputs before changing them.
+2. Follow the input prompts. Text is encoded to bytes when required; numeric inputs are checked before cryptographic operations.
+3. Read the `exercise()` function below: it connects the functions in the order needed for this question.
+4. Compare the printed output with the expected result, and repeat using a different input.
+
+```python
+def exercise():
+    """Input: message and supplied ElGamal parameters. Check key consistency and round-trip.
+    Output: supplied/derived public values, ciphertexts and recovered message.
+    """
+    text = ask_text("Message", "Asymmetric Algorithms")
+    p = ask_int("Prime p", 7919, 257)
+    g = ask_int("Generator g", 2, 2, p - 2)
+    h = ask_int("Supplied public h", 6465, 1, p - 1)
+    x = ask_int("Private x", 2999, 1, p - 2)
+    if not isPrime(p):
+        raise ValueError("p must be prime.")
+    derived = pow(g, x, p)
+    if h != derived:
+        print("Inconsistent supplied h:", h, "Using g^x mod p =", derived)
+    public = {"p": p, "g": g, "y": derived}
+    ciphertext = elgamal_text_encrypt(public, text)
+    print("Ciphertext:", ciphertext, "Recovered:", elgamal_text_decrypt(public, x, ciphertext))
+```
+
+Follow the calls in `exercise()` from top to bottom. It obtains the inputs, calls the small functions that do the work, and prints intermediate values and the final result. Bytes are shown as hexadecimal when ordinary text would be unreadable. A successful round trip prints a recovered message equal to the input; verification examples also show a changed message being rejected where applicable.
+
+## Every function explained
+
+### `ask_text(label, default)`
+
+Input: a prompt and default string. Read text, or use the default when Enter is pressed.
+Output: a string. Use ask_text('Message', 'hello') to let the user choose a message.
+
+### `ask_int(label, default, minimum, maximum)`
+
+Input: prompt, default integer, optional inclusive limits. Read and validate a number.
+Output: an integer; raise ValueError on bad input. Use for keys, counts, or amounts.
+
+### `elgamal_encrypt(public, message)`
+
+Input: ElGamal public parameters and integer 1<=message<p. Randomize and encrypt.
+Output: pair (g^k mod p, message*y^k mod p). Use fresh k for every encryption.
+
+### `elgamal_decrypt(public, private, ciphertext)`
+
+Input: public parameters, private exponent and ciphertext pair. Remove the shared mask.
+Output: original integer. Multiply c2 by the modular inverse of c1^private.
+
+### `elgamal_text_encrypt(public, text)`
+
+Input: public parameters with p>256 and text. Encrypt each UTF-8 byte plus one.
+Output: list of ciphertext pairs. Byte-wise encryption is simple but inefficient.
+
+### `elgamal_text_decrypt(public, private, ciphertexts)`
+
+Input: ElGamal keys and list of encrypted byte pairs. Decrypt and undo the +1 mapping.
+Output: decoded UTF-8 string. Use with elgamal_text_encrypt.
+
+### `exercise()`
+
+Input: message and supplied ElGamal parameters. Check key consistency and round-trip.
+Output: supplied/derived public values, ciphertexts and recovered message.
+
+### `main()`
+
+Input: terminal choices. Run the exercise safely.
+Output: printed results. Use python solution.py and choose a menu option.
+
+## What to change during an exam
+
+Change values through the prompts first. For a different scenario, replace the example messages or record fields in `exercise()`, and keep the cryptographic functions. Match the requested algorithm, key size, mode, and hash exactly. Store IVs/nonces alongside ciphertext when needed. Keep private keys private. Hashing cannot be decrypted; encryption can. A hash by itself does not prove who sent a message.
+
+## Notes and limitations
+
+These tiny fixed parameters are for arithmetic practice only. The consistency check explains any supplied-key mismatch before proceeding.

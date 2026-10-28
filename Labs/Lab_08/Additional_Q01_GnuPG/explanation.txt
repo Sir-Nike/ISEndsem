@@ -1,0 +1,114 @@
+Lab 8 additional Q1: GnuPG encryption and signatures
+
+What the manual asks
+
+Use GnuPG to securely store/transmit data, create a digital signature and verify after transmission.
+
+Start here: the idea in plain English
+
+GnuPG is an external application, so Python calls the gpg command rather than pretending PyCryptodome is GnuPG. Create a separate local keyring, generate a lab RSA identity, export its public key, encrypt a message to that identity, decrypt it, sign the original file with a detached signature and verify both the original and a modified copy. Copy the encrypted file and signature to a separate received directory to simulate transmission.
+
+How to run
+
+From this question folder, run:
+
+../../../.venv/bin/python solution.py
+
+
+The program is interactive. If you installed dependencies into another environment, use that environment's Python instead. Read Labs/README.md for setup. Paths above assume the environment is in the project root, beside Labs.
+
+Press 1 to run an exercise, enter your values or press Enter for the displayed default, and press 0 to exit. Input conversion and validation errors are printed without terminating the interactive menu. Each function can also be imported and called separately.
+
+Step-by-step solution
+
+1. Start the program and select Run. Read the displayed default inputs before changing them.
+2. Follow the input prompts. Text is encoded to bytes when required; numeric inputs are checked before cryptographic operations.
+3. Read the exercise() function below: it connects the functions in the order needed for this question.
+4. Compare the printed output with the expected result, and repeat using a different input.
+
+def exercise():
+    """Input: message text. Run GnuPG encrypt/decrypt and detached-signature verification.
+    Output: isolated keyring, public key, encrypted/received files and tamper rejection.
+    """
+    folder = Path(__file__).resolve().parent / "storage"
+    folder.mkdir(exist_ok=True)
+    home = folder / "gnupg"
+    fingerprint = ensure_identity(home)
+    plain = folder / "message.txt"
+    plain.write_text(ask_text("Message", "Secure GnuPG file transfer"))
+    public = gpg_command(home, ["--armor", "--export", fingerprint]).stdout
+    (folder / "public_key.asc").write_text(public)
+    encrypted = folder / "message.gpg"
+    signature = folder / "message.sig"
+    gpg_command(
+        home,
+        [
+            "--trust-model",
+            "always",
+            "--recipient",
+            fingerprint,
+            "--output",
+            str(encrypted),
+            "--encrypt",
+            str(plain),
+        ],
+    )
+    gpg_command(
+        home, ["--local-user", fingerprint, "--output", str(signature), "--detach-sign", str(plain)]
+    )
+    received = folder / "received"
+    received.mkdir(exist_ok=True)
+    shutil.copy2(encrypted, received / encrypted.name)
+    shutil.copy2(signature, received / signature.name)
+    recovered = received / "message.txt"
+    gpg_command(home, ["--output", str(recovered), "--decrypt", str(received / encrypted.name)])
+    valid = gpg_command(home, ["--verify", str(received / signature.name), str(recovered)], False)
+    tampered = received / "tampered.txt"
+    tampered.write_bytes(recovered.read_bytes() + b"!")
+    invalid = gpg_command(home, ["--verify", str(received / signature.name), str(tampered)], False)
+    print("Public fingerprint:", fingerprint, "Recovered:", recovered.read_text())
+    print(
+        "Original signature valid:",
+        valid.returncode == 0,
+        "Tampered signature valid:",
+        invalid.returncode == 0,
+    )
+    print("Files:", folder)
+
+
+Follow the calls in exercise() from top to bottom. It obtains the inputs, calls the small functions that do the work, and prints intermediate values and the final result. Bytes are shown as hexadecimal when ordinary text would be unreadable. A successful round trip prints a recovered message equal to the input; verification examples also show a changed message being rejected where applicable.
+
+Every function explained
+
+ask_text(label, default)
+
+Input: a prompt and default string. Read text, or use the default when Enter is pressed.
+Output: a string. Use ask_text('Message', 'hello') to let the user choose a message.
+
+gpg_command(home, arguments, check)
+
+Input: isolated keyring directory, list of GnuPG arguments and whether failure is fatal.
+Output: completed subprocess result. No shell is used; commands stay inside this keyring.
+
+ensure_identity(home)
+
+Input: isolated GnuPG home. Reuse its first secret identity or generate a lab RSA identity.
+Output: fingerprint string. The lab key deliberately has no passphrase for a repeatable exercise.
+
+exercise()
+
+Input: message text. Run GnuPG encrypt/decrypt and detached-signature verification.
+Output: isolated keyring, public key, encrypted/received files and tamper rejection.
+
+main()
+
+Input: terminal choices. Run the exercise safely.
+Output: printed results. Use python solution.py and choose a menu option.
+
+What to change during an exam
+
+Change values through the prompts first. For a different scenario, replace the example messages or record fields in exercise(), and keep the cryptographic functions. Match the requested algorithm, key size, mode, and hash exactly. Store IVs/nonces alongside ciphertext when needed. Keep private keys private. Hashing cannot be decrypted; encryption can. A hash by itself does not prove who sent a message.
+
+Notes and limitations
+
+Requires the separate gpg executable, not just a pip library. Uses an isolated keyring, never your personal keyring. Unprotected lab private keys are only for this exercise; protect real private keys with a passphrase. Copying files simulates transmission; this program does not send messages or upload data. The trusted local fingerprint is explicit; real recipients must authenticate public keys.

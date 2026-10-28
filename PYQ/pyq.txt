@@ -1,0 +1,108 @@
+QN 1
+Take two inputs: number of boxes, cost of each box.
+Validate the input (input should lie between 1 to n-1 where n is the RSA parameter) then proceed.
+Encrypt the two inputs and pass it to a function which calculates their multiplication mod N.
+Perform this calculation on encrypted values only.
+Encryption is via RSA with values mentioned in the exam.
+If the products match after decryption print verified.
+Menu driven code to be followed and a modular approach is expected. No hardcoded values
+
+
+QN2
+Create 2 files
+Patient_records and encrypted_patient_records
+
+A dataset was provided so put that data into the patient records
+
+Patient_id
+Patient_name
+Diagnosis
+Blood_glucose
+Treatment
+
+A menu driven program
+
+1) display the dataset
+2) encrypt the dataset using AES (any byte)
+3) produce a sha-256 of a given record using its pateint id
+4) sign the dataset using RSA
+5) verify the signature for tampering
+6) add the total blood glucose of all patients and show the homomorphic sum using pallier
+7) search for patient using diagnosis and dipaly the patient is
+8) display the patient records for a user input patient id only after verification and decrypt the data
+9) exit
+
+
+QN3
+SECURE GRANT EXPENSE PORTAL
+
+Scenario:
+
+A research institute manages grant expenses through an online portal. Researchers submit grant details, reviewers check their integrity and authenticity, and the finance officer computes the total grant expenditure. The system must keep grant data confidential and verifiable, and the total must be computed without decrypting individual amounts.
+
+Requirements:
+
+Researcher side: The researcher enters a Grant ID, Grant Description and Grant Amount. Before storing, the system:
+
+Encrypts the grant description with AES-192.
+Encrypts the grant amount with the Paillier cryptosystem.
+Computes an MD5 hash of the grant record.
+Signs the hash with an RSA digital signature.
+The researcher can submit grant details, and view all submitted records, including those entered earlier.
+
+Reviewer side: The reviewer verifies the RSA signature and recomputes the MD5 hash to detect tampering. The reviewer can search the stored records by index (Grant ID) without exposing the encrypted contents. The reviewer can also view the AES-192 decrypted grant description as a hexadecimal dump.
+
+Finance Officer side: The finance officer homomorphically aggregates the Paillier-encrypted amounts of the selected grants. The officer then verifies the signatures and decrypts only the final aggregate, never individual amounts.
+
+Task:
+
+Write a menu-driven Python program implementing the above roles and functions. Use role-based menus and cryptographic operations for confidentiality, integrity and authenticity. Store the encrypted, hashed and signed records persistently (file or database), so that earlier entries remain visible after a restart. Handle invalid input and tampered records gracefully. Display outputs for all functions.
+
+Note: If the Python code is not menu-driven, the total marks obtained will be reduced to half.
+
+
+QN4
+A national e-voting system has been deployed to allow citizens to cast their votes securely from remote locations. The system ensures privacy, verifiability, integrity, and non-repudiation while allowing aggregate computations without revealing individual votes.
+
+1. On the Client Side
+A voter fills out an electronic ballot that records their candidate selection and constituency ID.
+Before submission, the voter's device generates a SHA-512 hash of the ballot file to ensure data integrity.
+The ballot is then encrypted using AES-256 in CBC mode for confidentiality.
+The AES key is encrypted with the Election Commission's RSA-4096 public key.
+To ensure authenticity and non-repudiation, the voter's system digitally signs the SHA-512 hash using their ElGamal digital signature.
+The voter's choice (numerical candidate ID) is homomorphically encrypted using the Paillier encryption scheme, allowing the Election Commission to tally votes without decrypting individual ballots.
+A timestamp from a trusted authority is added to record the exact submission time and ensure votes are cast before the deadline.
+
+2. On the Server Side
+The system decrypts the AES session key using its RSA private key but keeps the homomorphically encrypted vote values in their encrypted form.
+It verifies the digital signature using the voter's public key and compares the SHA-512 hash to detect any tampering.
+The timestamp is checked to confirm that the vote was cast within the valid voting period.
+The homomorphic tallying algorithm is applied to aggregate the encrypted votes and compute total counts without decrypting any individual vote.
+For audit and search purposes, the server maintains a searchable encryption index to locate ballots from specific constituencies or time ranges without revealing vote content.
+At the end of the election, only the final aggregated ciphertext is decrypted using a threshold decryption scheme, ensuring that no single authority can view votes independently.
+
+3. Programming Task
+Write a menu-driven Python program that implements the above functionalities.
+
+Ensure that the system supports role-based access control and the appropriate use of cryptographic techniques for confidentiality, integrity, and authenticity.
+
+Use any data structures (e.g., databases, files or arrays) to securely store encrypted, signed and hashed data.
+
+Show outputs for all the functions specified in the question.
+
+
+QN5
+
+report - management - record
+store the report id , department , description
+- encode the description with sha 256
+- use kdf (10 rounds) , use 24 bytes for AES 192 CBC encrypt the report_id, department (make the key valid only for 120 seconds and show the expiry of the key too , shouldnt be able to use the same key once expired)
+- use RSA 2048 , PKCS V1 vs 1.5 and SHA 256 to sign it and display the signature
+- make it indexable (HMAC) and also searchable based on the description key words
+- no bulk decryption once searched the keyword
+- make it role based - staff , admin
+- staff had certain functions like add the record, encrypt , etc
+- admin could see the records
+- you need to show a audit record once the keys are tampered with , if tampered with it should show false when trying to verify signature
+- no internal department change too should be recorded
+- store data in json

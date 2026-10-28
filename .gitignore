@@ -1,0 +1,22 @@
+# Local Python environment and caches
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Editor and operating-system files
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Local credentials and generated practice state
+.env
+.env.*
+!.env.example
+practice_data/
+server_data/
+client_data/

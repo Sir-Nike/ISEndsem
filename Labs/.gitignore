@@ -1,0 +1,10 @@
+__pycache__/
+*.pyc
+storage/
+transfer_output/
+received_files/
+snort_lab/
+client_private.json
+client_public.json
+timings.csv
+timings.svg

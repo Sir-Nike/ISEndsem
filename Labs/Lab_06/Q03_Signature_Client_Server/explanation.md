@@ -1,0 +1,241 @@
+# Lab 6 Q3: Client/server signature and DH authentication
+
+## What the manual asks
+
+Repeat ElGamal/Schnorr signing and Diffie-Hellman authentication in a client/server setting; RSA is also available.
+
+## Start here: the idea in plain English
+
+First run client.py, choose Run, and accept Send now? n to create its identity. Give the server the public JSON file through a trusted channel (the same local file here). Start server.py and run the client again, answering y to send. Choose RSA, ElGamal, Schnorr, or DH-HMAC. The server verifies using its pretrusted client identity and returns both original and changed-message results. DH-HMAC derives a shared key with an ephemeral server DH value; it authenticates the message to the server but is not a publicly verifiable signature.
+
+## How to run
+
+From this question folder, run:
+
+```bash
+../../../.venv/bin/python server.py
+```
+
+The program is interactive. If you installed dependencies into another environment, use that environment's Python instead. Read `Labs/README.md` for setup. Paths above assume the environment is in the project root, beside `Labs`.
+
+Press 1 to run an exercise, enter your values or press Enter for the displayed default, and press 0 to exit. Input conversion and validation errors are printed without terminating the interactive menu. Each function can also be imported and called separately.
+
+## Step-by-step solution
+
+1. Start the program and select Run. Read the displayed default inputs before changing them.
+2. Follow the input prompts. Text is encoded to bytes when required; numeric inputs are checked before cryptographic operations.
+3. Read the `exercise()` function below: it connects the functions in the order needed for this question.
+4. Compare the printed output with the expected result, and repeat using a different input.
+
+```python
+def exercise():
+    """Input: server address, trusted client public JSON path and connection count.
+    Output: verifies RSA/ElGamal/Schnorr signatures or DH-HMAC; sends valid/tampered checks.
+    """
+    host = ask_text("Bind host", "127.0.0.1")
+    port = ask_int("Port", 5063, 1024, 65535)
+    path = Path(
+        ask_text(
+            "Trusted client public identity path",
+            str(Path(__file__).resolve().parent / "client_public.json"),
+        )
+    )
+    identity = json.loads(path.read_text())
+    count = ask_int("Connections before returning", 1, 1, 100)
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as listener:
+        listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        listener.bind((host, port))
+        listener.listen()
+        listener.settimeout(60)
+        print("Listening", host, port, flush=True)
+        for _ in range(count):
+            connection, address = listener.accept()
+            with connection:
+                connection.settimeout(15)
+                try:
+                    scheme = receive_json(connection)["scheme"]
+                    if scheme not in ("RSA", "ElGamal", "Schnorr", "DH-HMAC"):
+                        raise ValueError("Unknown scheme.")
+                    shared = None
+                    if scheme == "DH-HMAC":
+                        private, public = dh_keypair()
+                        shared = dh_shared(private, identity["dh_public"])
+                        send_json(connection, {"dh_public": public})
+                    else:
+                        send_json(connection, {"ready": True})
+                    request = receive_json(connection)
+                    valid, changed = check_signed_request(request, identity, scheme, shared)
+                    send_json(
+                        connection, {"scheme": scheme, "valid": valid, "tampered_valid": changed}
+                    )
+                    print(scheme, "Valid:", valid, "Tampered valid:", changed)
+                except (ValueError, KeyError, TypeError, OSError) as error:
+                    print("Rejected client:", error)
+```
+
+Follow the calls in `exercise()` from top to bottom. It obtains the inputs, calls the small functions that do the work, and prints intermediate values and the final result. Bytes are shown as hexadecimal when ordinary text would be unreadable. A successful round trip prints a recovered message equal to the input; verification examples also show a changed message being rejected where applicable.
+
+## Every function explained
+
+### `ask_text(label, default)`
+
+Input: a prompt and default string. Read text, or use the default when Enter is pressed.
+Output: a string. Use ask_text('Message', 'hello') to let the user choose a message.
+
+### `ask_int(label, default, minimum, maximum)`
+
+Input: prompt, default integer, optional inclusive limits. Read and validate a number.
+Output: an integer; raise ValueError on bad input. Use for keys, counts, or amounts.
+
+### `verify_message(public_key, message, signature)`
+
+Input: RSA public key, message bytes and signature bytes. Verify the SHA-256 signature.
+Output: True for a valid signature, False for altered message/signature or wrong key.
+
+### `elgamal_verify(message, signature, p, g, public)`
+
+Input: message bytes, (r,s), parameters and public y=g^private. Check ElGamal equation.
+Output: boolean. Use elgamal_verify(data, signature, p, g, y).
+
+### `schnorr_challenge(commitment, message, q)`
+
+Input: integer commitment, message bytes and subgroup order. Hash both with unambiguous framing.
+Output: challenge integer modulo q. Used identically by signer and verifier.
+
+### `schnorr_verify(message, signature, p, q, h, public)`
+
+Input: message, signature, subgroup and public y=h^private. Rebuild the commitment.
+Output: boolean comparing the recomputed challenge against the signature challenge.
+
+### `dh_keypair(p, g)`
+
+Input: prime and generator (standard defaults). Draw a random private exponent.
+Output: (private, public=g^private mod p). Only the public value is exchanged.
+
+### `dh_shared(private, peer_public, p)`
+
+Input: own private exponent, peer public value and safe prime. Validate the peer.
+Output: SHA-256-derived 32-byte shared key. Both peers get the same key.
+
+### `receive_exact(connection, count)`
+
+Input: connected socket and required byte count. Read until all bytes arrive.
+Output: bytes of exactly count length. Raise ValueError if the peer disconnects early.
+
+### `send_json(connection, record)`
+
+Input: connected socket and JSON-compatible record. Prefix UTF-8 JSON with a 4-byte length.
+Output: bytes sent over TCP; returns nothing. Framing handles TCP splitting/coalescing.
+
+### `receive_json(connection)`
+
+Input: connected socket. Read bounded length-prefixed JSON, including partial TCP reads.
+Output: parsed JSON value. Reject frames over 2 MB before allocating their payload.
+
+### `check_signed_request(request, identity, scheme, shared_key)`
+
+Input: request, pretrusted client identity, chosen scheme and optional DH-derived key.
+Output: (valid original, valid changed message). Dispatch only to the specified verifier.
+
+### `exercise()`
+
+Input: server address, trusted client public JSON path and connection count.
+Output: verifies RSA/ElGamal/Schnorr signatures or DH-HMAC; sends valid/tampered checks.
+
+### `main()`
+
+Input: terminal choices. Run the exercise safely.
+Output: printed results. Use python solution.py and choose a menu option.
+
+## What to change during an exam
+
+Change values through the prompts first. For a different scenario, replace the example messages or record fields in `exercise()`, and keep the cryptographic functions. Match the requested algorithm, key size, mode, and hash exactly. Store IVs/nonces alongside ciphertext when needed. Keep private keys private. Hashing cannot be decrypted; encryption can. A hash by itself does not prove who sent a message.
+
+## Notes and limitations
+
+Client setup must happen before the server starts. Private keys are never sent. ElGamal/Schnorr use quick 256-bit finite-field practice parameters. DH-HMAC is a shared-secret authentication demonstration, not a digital signature or a fully mutually authenticated network protocol. The server trusts the client public identity through prior local setup.
+
+
+## Client/server instructions
+
+Open TWO terminals in this question folder. In terminal 1 run `../../../.venv/bin/python server.py`, choose 1, and accept host 127.0.0.1 and port 5063. Leave it waiting. In terminal 2 run `../../../.venv/bin/python client.py`, choose 1, and use the same host/port. The server accepts the requested number of connections (default 1), returns to its menu, and can be started again. Both programs exit with menu option 0. A socket timeout prevents indefinite waiting. This is a localhost demonstration; separate machines require their actual reachable address.
+
+### Client `ask_text`
+
+Input: a prompt and default string. Read text, or use the default when Enter is pressed.
+Output: a string. Use ask_text('Message', 'hello') to let the user choose a message.
+
+### Client `ask_int`
+
+Input: prompt, default integer, optional inclusive limits. Read and validate a number.
+Output: an integer; raise ValueError on bad input. Use for keys, counts, or amounts.
+
+### Client `sign_message`
+
+Input: RSA private key and message bytes. Hash with SHA-256 and sign with PKCS#1 v1.5.
+Output: signature bytes. Use verify_message with the corresponding public key.
+
+### Client `signature_group`
+
+Input: safe-prime demonstration bit size. Generate p=2q+1, a full generator and subgroup generator.
+Output: (p,q,g,h) with g order 2q and h=g^2 order q. Used for ElGamal and Schnorr.
+
+### Client `elgamal_sign`
+
+Input: message bytes, prime p, full generator g and private exponent. Sign SHA-256 digest.
+Output: (r,s) signature. Fresh nonce k must be invertible modulo p-1 and never reused.
+
+### Client `schnorr_challenge`
+
+Input: integer commitment, message bytes and subgroup order. Hash both with unambiguous framing.
+Output: challenge integer modulo q. Used identically by signer and verifier.
+
+### Client `schnorr_sign`
+
+Input: message and Schnorr subgroup/private key. Commit with a fresh nonce and answer challenge.
+Output: (challenge,response). response=nonce+challenge*private modulo q.
+
+### Client `dh_keypair`
+
+Input: prime and generator (standard defaults). Draw a random private exponent.
+Output: (private, public=g^private mod p). Only the public value is exchanged.
+
+### Client `dh_shared`
+
+Input: own private exponent, peer public value and safe prime. Validate the peer.
+Output: SHA-256-derived 32-byte shared key. Both peers get the same key.
+
+### Client `receive_exact`
+
+Input: connected socket and required byte count. Read until all bytes arrive.
+Output: bytes of exactly count length. Raise ValueError if the peer disconnects early.
+
+### Client `send_json`
+
+Input: connected socket and JSON-compatible record. Prefix UTF-8 JSON with a 4-byte length.
+Output: bytes sent over TCP; returns nothing. Framing handles TCP splitting/coalescing.
+
+### Client `receive_json`
+
+Input: connected socket. Read bounded length-prefixed JSON, including partial TCP reads.
+Output: parsed JSON value. Reject frames over 2 MB before allocating their payload.
+
+### Client `prepare_identity`
+
+Input: client directory. Generate/load RSA, ElGamal, Schnorr and DH private identity values.
+Output: private dictionary. Export only public values to client_public.json for server trust.
+
+### Client `make_signed_request`
+
+Input: own private identity, chosen scheme, message bytes and server handshake.
+Output: request with message and signature or HMAC. Only public messages/tags leave the client.
+
+### Client `exercise`
+
+Input: identity setup or send choice, server address, scheme, message and alteration option.
+Output: public identity file, signature/tag and server verification. Set up before server starts.
+
+### Client `main`
+
+Input: terminal choices. Run the exercise safely.
+Output: printed results. Use python solution.py and choose a menu option.
